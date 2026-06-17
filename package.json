@@ -1,0 +1,12 @@
+{
+  "name": "no-reaction",
+  "version": "1.0.0",
+  "description": "高中化学主题的双人离子卡牌对战游戏",
+  "scripts": {
+    "test": "node test/engine.test.js && node test/sim.test.js",
+    "test:engine": "node test/engine.test.js",
+    "test:sim": "node test/sim.test.js",
+    "serve": "node server.js"
+  },
+  "license": "MIT"
+}

@@ -1,0 +1,101 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>No Reaction — 对战中</title>
+  <link rel="stylesheet" href="css/style.css" />
+</head>
+<body class="game">
+  <header class="topbar">
+    <span class="brand">No Reaction</span>
+    <span id="room-tag" class="room-tag" hidden>房间 <b id="room-code-show">——</b></span>
+    <span class="spacer"></span>
+    <span class="turn-flag">当前回合：<b id="turn-name">——</b></span>
+    <button id="btn-quit" class="btn-mini">退出</button>
+  </header>
+
+  <div id="board" class="board">
+    <section class="board-main">
+      <!-- 对手区 -->
+      <div class="opp-row">
+        <div id="opp-pill" class="player-pill">
+          <span id="opp-name">对手</span>
+          <span class="count">手牌 <span id="opp-count">0</span></span>
+        </div>
+        <div id="opp-hand" class="opp-hand"></div>
+      </div>
+
+      <!-- 反应区 -->
+      <div class="zone-wrap">
+        <div class="zone-title">
+          <span>反应区</span>
+          <span id="zone-info"></span>
+        </div>
+        <div id="zone" class="zone">
+          <span class="empty-hint">反应区为空</span>
+        </div>
+      </div>
+
+      <!-- 手牌区 -->
+      <div class="hand-area">
+        <div class="hand-head">
+          <span id="me-name" class="who">你</span>
+          <span id="phase-label" class="phase"></span>
+        </div>
+        <div id="hand" class="hand"></div>
+        <div id="hand-actions" class="hand-actions"></div>
+      </div>
+    </section>
+
+    <aside class="board-side">
+      <div class="log-head">对战记录</div>
+      <div id="log" class="log"></div>
+    </aside>
+  </div>
+
+  <!-- 等待联机对手 -->
+  <div id="waiting-mask" class="modal-mask">
+    <div class="modal">
+      <div class="waiting">
+        <div class="spinner"></div>
+        <h2 id="waiting-title">等待对手加入…</h2>
+        <p id="waiting-sub">把房间码发给好友，对手加入后自动开始。</p>
+        <div class="room-tag" style="font-size:20px;">房间码 <b id="waiting-code">——</b></div>
+      </div>
+    </div>
+  </div>
+
+  <!-- 反应提示模态 -->
+  <div id="react-mask" class="modal-mask">
+    <div class="modal">
+      <h2>⚠ 触发反应</h2>
+      <div id="react-eq" class="reaction-eq"></div>
+      <p id="react-desc">使用道具牌解除反应，或认输该反应。</p>
+      <div class="modal-actions">
+        <button id="react-ok" class="btn">进入道具阶段</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- 结束模态 -->
+  <div id="over-mask" class="modal-mask">
+    <div class="modal">
+      <h2 id="over-title">游戏结束</h2>
+      <p id="over-sub"></p>
+      <div class="modal-actions">
+        <button id="btn-again" class="btn btn-primary">再来一局</button>
+        <button id="btn-home" class="btn">返回首页</button>
+      </div>
+    </div>
+  </div>
+
+  <div id="banner" class="banner"></div>
+
+  <script src="config/cards.js"></script>
+  <script src="js/reactions.js"></script>
+  <script src="js/engine.js"></script>
+  <script src="js/network.js"></script>
+  <script src="js/ui.js"></script>
+</body>
+</html>

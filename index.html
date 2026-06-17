@@ -1,0 +1,61 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>No Reaction — 化学离子卡牌对战</title>
+  <link rel="stylesheet" href="css/style.css" />
+</head>
+<body class="home">
+  <main class="home-card">
+    <h1 class="logo">No&nbsp;Reaction</h1>
+    <p class="tagline">高中化学 · 双人离子卡牌对战</p>
+
+    <section class="home-actions">
+      <div class="action-block">
+        <h2>开始对战</h2>
+        <input id="nick" class="field" maxlength="12" placeholder="你的昵称（可选）" />
+      </div>
+
+      <div class="action-block">
+        <button id="btn-local" class="btn btn-primary">本地双人（同屏热座）</button>
+        <p class="hint">同一台设备轮流操作，无需联网。</p>
+      </div>
+
+      <div class="divider"><span>或 联机对战</span></div>
+
+      <div class="action-block">
+        <button id="btn-create" class="btn">创建房间</button>
+        <p class="hint">生成 6 位房间码，发给好友加入。</p>
+      </div>
+
+      <div class="action-block join-row">
+        <input id="room-code" class="field code-field" maxlength="6" placeholder="房间码" />
+        <button id="btn-join" class="btn">加入房间</button>
+      </div>
+
+      <p id="net-status" class="net-status"></p>
+    </section>
+
+    <details class="rules-fold">
+      <summary>游戏规则速览</summary>
+      <div class="rules-body">
+        <p><strong>目标：</strong>轮流向反应区打出离子牌，<em>不要让反应区发生反应</em>。迫使沉淀或气体反应发生、且无法用道具解除的玩家判负。</p>
+        <ul>
+          <li><strong>中和</strong>（H⁺ + OH⁻）自动移除，不判负。</li>
+          <li><strong>沉淀 / 气体</strong>反应触发后进入道具阶段，可用道具解除。</li>
+          <li>道具：过滤、加热、萃取、中和、搅拌、催化剂。</li>
+        </ul>
+      </div>
+    </details>
+
+    <footer class="home-foot">苏州大学 · No Reaction</footer>
+  </main>
+
+  <script src="config/cards.js"></script>
+  <script src="js/reactions.js"></script>
+  <script src="js/engine.js"></script>
+  <script src="js/network.js"></script>
+  <script src="js/home.js"></script>
+</body>
+</html>
