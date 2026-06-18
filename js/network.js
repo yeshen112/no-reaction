@@ -132,10 +132,15 @@
     return me ? me.seat : -1;
   }
 
+  // ---- 发送表情（双方均可）----
+  async function pushEmote(code, emote) {
+    await postJson('/api/emote', { code, clientId: clientId(), emote });
+  }
+
   root.Network = {
     isConfigured, clientId,
     createRoom, joinRoom, subscribe,
-    pushState, pushAction, mySeat,
+    pushState, pushAction, pushEmote, mySeat,
     leaveRoom,
   };
 })(typeof window !== 'undefined' ? window : globalThis);

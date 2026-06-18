@@ -58,6 +58,7 @@ function snapshot(room) {
     code: room.code,
     state: room.state,
     action: room.action,
+    emote: room.emote || null,
     players: (room.players || []).map(p => ({
       id: p.id,
       nick: p.nick,
@@ -178,6 +179,7 @@ async function handleApi(req, res, url) {
     if (!room) return sendJson(res, 404, { error: '房间不存在' });
     room.state = state;
     room.action = null;
+    room.emote = null;
     broadcast(room);
     return sendJson(res, 200, { ok: true });
   }
@@ -246,6 +248,18 @@ async function handleApi(req, res, url) {
     broadcast(room);
     return sendJson(res, 200, { ok: true });
   }
+  // ---- 发送表情（双方均可，不走引擎）----
+  if (route === '/api/emote' && req.method === 'POST') {
+    const { code, clientId, emote } = await readJson(req);
+    const room = rooms.get((code || '').toUpperCase());
+    if (!room) return sendJson(res, 404, { error: '房间不存在' });
+    if (!['happy', 'angry', 'taunt', 'crying'].includes(emote)) return sendJson(res, 400, { error: '无效表情' });
+    room.emote = { type: emote, by: clientId, seq: Date.now() };
+    broadcast(room);
+    room.emote = null;
+    return sendJson(res, 200, { ok: true });
+  }
+ 
 
   sendJson(res, 404, { error: '未知接口' });
 }

@@ -42,6 +42,17 @@
     $('banner').classList.remove('show');
   }
 
+  // ---- 表情弹窗 ----
+  function showEmote(type, fromOpponent) {
+    const pop = document.createElement('div');
+    pop.className = 'face-pop' + (fromOpponent ? ' from-opp' : ' from-self');
+    const inner = document.createElement('div');
+    inner.className = 'face-inner face-' + type;
+    pop.appendChild(inner);
+    document.body.appendChild(pop);
+    setTimeout(function () { pop.remove(); }, 2300);
+  }
+
   // ---- 先后手提示（开局闪现）----
   function showStartNotice(isFirst) {
     const mask = $('turn-notice');
@@ -72,6 +83,32 @@
     $('room-tag').hidden = false;
     $('room-code-show').textContent = ctx.roomCode;
     $('waiting-code').textContent = ctx.roomCode;
+
+    // 绑定表情菜单
+    var emoteTrigger = $('emote-trigger');
+    var emoteMenu = $('emote-menu');
+    if (emoteTrigger && emoteMenu) {
+      // 点击触发按钮 → 切换菜单开闭
+      emoteTrigger.addEventListener('click', function (e) {
+        e.stopPropagation();
+        emoteMenu.classList.toggle('show');
+      });
+      // 点击菜单内表情
+      emoteMenu.querySelectorAll('.emote-btn').forEach(function (btn) {
+        btn.addEventListener('click', function (e) {
+          e.stopPropagation();
+          var type = btn.dataset.emote;
+          emoteMenu.classList.remove('show');
+          showEmote(type, false);
+          Network.pushEmote(ctx.roomCode, type).catch(function () {});
+        });
+      });
+    }
+    // 点击页面其他地方关闭菜单
+    document.addEventListener('click', function () {
+      if (emoteMenu) emoteMenu.classList.remove('show');
+    });
+
     bootOnline();
   }
 
@@ -96,6 +133,11 @@
   async function onRoomUpdate(room) {
     ctx.seat = Network.mySeat(room.players);
     if (ctx.seat < 0) ctx.seat = (ctx.role === 'host') ? 0 : 1;
+
+    // 处理收到的表情（来自对手）
+    if (room.emote && room.emote.by && room.emote.by !== Network.clientId()) {
+      showEmote(room.emote.type, true);
+    }
 
     const bothJoined = (room.players || []).length >= 2;
 
@@ -236,6 +278,11 @@
   function render(lastRes) {
     const v = myView();
     if (!v) return;
+
+    // 表情栏：游戏中且未结束时显示
+    var showEmoteBar = (v.winner == null && !ctx.oppLeft);
+    $('emote-bar').style.display = showEmoteBar ? '' : 'none';
+    if (!showEmoteBar) { var m = $('emote-menu'); if (m) m.classList.remove('show'); }
 
     $('turn-name').textContent = v.players[v.activePlayer]
       ? v.players[v.activePlayer].name : '——';

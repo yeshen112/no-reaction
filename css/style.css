@@ -392,3 +392,351 @@ body.game {
   }
   .zone { max-height: 160px; }
 }
+
+/* ─────────────────── 表情系统 ─────────────────── */
+
+/* 表情栏容器：吉祥物 + 触发按钮 */
+.emote-bar {
+  display: flex; gap: 14px; justify-content: center; align-items: flex-end;
+  margin: 2px 0 0;
+}
+
+/* ====== 吉祥物 诺尔 Nore ====== */
+/* 诺尔是个蓝灰调的小化学家，用纯 CSS 几何绘制 */
+.mascot-nore {
+  width: 52px; height: 72px;
+  position: relative;
+  flex-shrink: 0;
+  cursor: default;
+  /* 呼吸动画 */
+  animation: nore-breathe 3s ease-in-out infinite;
+}
+/* 躯干容器 */
+.nore-body {
+  position: relative; width: 100%; height: 100%;
+}
+/* 头部：圆脸 */
+.nore-head {
+  position: absolute;
+  top: 0; left: 50%; transform: translateX(-50%);
+  width: 30px; height: 28px;
+  background: linear-gradient(160deg, #8ec8e8 0%, #5b9ecf 100%);
+  border-radius: 50%;
+  border: 2px solid #3a7098;
+  z-index: 3;
+}
+/* 护目镜带子 */
+.nore-head::before {
+  content: '';
+  position: absolute;
+  top: 8px; left: -2px; right: -2px;
+  height: 7px;
+  background: #3a7098;
+  border-radius: 3px;
+  opacity: .7;
+}
+/* 眼睛 */
+.nore-eye {
+  position: absolute;
+  top: 10px;
+  width: 5px; height: 5px;
+  background: #0d2b40;
+  border-radius: 50%;
+  z-index: 1;
+}
+.nore-eye.left  { left: 7px; }
+.nore-eye.right { right: 7px; }
+/* 嘴 */
+.nore-mouth {
+  position: absolute;
+  bottom: 5px; left: 50%; transform: translateX(-50%);
+  width: 8px; height: 3px;
+  border-bottom: 1.5px solid #3a7098;
+  border-radius: 0 0 5px 5px;
+}
+/* 躯干：梯形 */
+.nore-torso {
+  position: absolute;
+  top: 24px; left: 50%; transform: translateX(-50%);
+  width: 24px; height: 24px;
+  background: linear-gradient(180deg, #5b8faf 0%, #3d6d8a 100%);
+  border-radius: 5px 5px 8px 8px;
+  border: 2px solid #3a7098;
+  z-index: 2;
+}
+/* 实验服条纹 */
+.nore-torso::after {
+  content: '';
+  position: absolute;
+  top: 8px; left: 4px; right: 4px;
+  height: 1.5px;
+  background: #8ec8e8;
+  opacity: .4;
+}
+/* 手臂 */
+.nore-arm {
+  position: absolute;
+  top: 28px;
+  width: 7px; height: 14px;
+  background: #5b9ecf;
+  border: 1.5px solid #3a7098;
+  border-radius: 4px;
+  z-index: 1;
+}
+.nore-arm.left  { left: 6px; transform: rotate(8deg); }
+.nore-arm.right { right: 6px; transform: rotate(-8deg); }
+/* 双腿 */
+.nore-legs {
+  position: absolute;
+  bottom: 2px; left: 50%; transform: translateX(-50%);
+  width: 20px; height: 12px;
+}
+.nore-legs::before,
+.nore-legs::after {
+  content: '';
+  position: absolute;
+  bottom: 0;
+  width: 8px; height: 12px;
+  background: #3d6d8a;
+  border: 1.5px solid #3a7098;
+  border-radius: 0 0 5px 5px;
+}
+.nore-legs::before { left: 0; }
+.nore-legs::after  { right: 0; }
+
+@keyframes nore-breathe {
+  0%, 100% { transform: translateY(0); }
+  50%      { transform: translateY(-3px); }
+}
+
+/* ====== 表情触发按钮 ====== */
+.emote-wrap {
+  position: relative;
+  flex-shrink: 0;
+}
+.emote-trigger {
+  width: 44px; height: 44px;
+  border-radius: 50%;
+  background: var(--panel-2);
+  border: 2px solid var(--line);
+  cursor: pointer;
+  padding: 0;
+  display: flex; align-items: center; justify-content: center;
+  transition: border-color .15s, background .15s, transform .12s;
+}
+.emote-trigger:hover {
+  border-color: var(--accent);
+  background: var(--panel);
+  transform: scale(1.1);
+}
+.emote-trigger .trigger-icon {
+  font-size: 20px; line-height: 1;
+  pointer-events: none;
+}
+
+/* ====== 表情弹出菜单 ====== */
+.emote-menu {
+  position: absolute;
+  bottom: 54px;
+  left: 50%;
+  transform: translateX(-50%);
+  display: none;
+  gap: 8px;
+  padding: 8px 10px;
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: 28px;
+  box-shadow: 0 6px 24px rgba(0,0,0,.55);
+  z-index: 80;
+  white-space: nowrap;
+}
+.emote-menu.show {
+  display: flex;
+  animation: menu-pop .18s ease-out;
+}
+@keyframes menu-pop {
+  from { opacity: 0; transform: translateX(-50%) translateY(8px) scale(.9); }
+  to   { opacity: 1; transform: translateX(-50%) translateY(0) scale(1); }
+}
+
+/* ====== 表情按钮底座（菜单内） ====== */
+.emote-btn {
+  width: 44px; height: 44px;
+  position: relative;
+  border-radius: 50%;
+  border: 2px solid rgba(255,255,255,.12);
+  cursor: pointer;
+  flex-shrink: 0;
+  padding: 0;
+  transition: transform .14s ease, box-shadow .14s ease, border-color .14s ease;
+  box-shadow: 0 2px 8px rgba(0,0,0,.35);
+}
+.emote-btn:hover {
+  transform: scale(1.16);
+  border-color: rgba(255,255,255,.3);
+  box-shadow: 0 4px 16px rgba(0,0,0,.5);
+}
+.emote-btn:active {
+  transform: scale(.85);
+}
+
+.emote-btn::before,
+.emote-btn::after {
+  content: ''; position: absolute;
+}
+
+/*
+  四个表情共用圆形脸型，用 ::before 画眉眼，::after 画嘴巴。
+  按钮 44px，弹窗 72px —— 弹窗通过 .face-pop 放大，细节等比缩放。
+*/
+
+/* === 开心 — 暖黄底，弯弯眼，大笑嘴 === */
+.face-happy {
+  background: linear-gradient(140deg, #fad24b 0%, #e8a820 100%);
+}
+.face-happy::before {
+  top: 38%; left: 50%; transform: translateX(-50%);
+  width: 20px; height: 6px;
+  border-top: 2px solid #7a4a10;
+  border-radius: 50%;
+  -webkit-mask-image: linear-gradient(
+    90deg,
+    #000 0%, #000 26%, transparent 26%, transparent 38%,
+    #000 38%, #000 64%, transparent 64%, transparent 76%,
+    #000 76%, #000 100%
+  );
+  mask-image: linear-gradient(
+    90deg,
+    #000 0%, #000 26%, transparent 26%, transparent 38%,
+    #000 38%, #000 64%, transparent 64%, transparent 76%,
+    #000 76%, #000 100%
+  );
+}
+.face-happy::after {
+  bottom: 18%; left: 50%; transform: translateX(-50%);
+  width: 15px; height: 8px;
+  border-bottom: 2.5px solid #7a4a10;
+  border-radius: 0 0 11px 11px;
+}
+
+/* === 生气 — 暗红底，倒八眉，圆眼珠，抿嘴 === */
+.face-angry {
+  background: linear-gradient(140deg, #e86050 0%, #c0392b 100%);
+}
+.face-angry::before {
+  top: 30%; left: 50%; transform: translateX(-50%);
+  width: 20px; height: 6px;
+  border-bottom: 2px solid #4a0e0e;
+  border-radius: 50%;
+  -webkit-mask-image: linear-gradient(
+    90deg,
+    #000 0%, #000 26%, transparent 26%, transparent 38%,
+    #000 38%, #000 64%, transparent 64%, transparent 76%,
+    #000 76%, #000 100%
+  );
+  mask-image: linear-gradient(
+    90deg,
+    #000 0%, #000 26%, transparent 26%, transparent 38%,
+    #000 38%, #000 64%, transparent 64%, transparent 76%,
+    #000 76%, #000 100%
+  );
+}
+.face-angry::after {
+  top: 36%; left: 50%; transform: translateX(-50%);
+  width: 10px; height: 3.5px;
+  border-radius: 2px;
+  background: #4a0e0e;
+  box-shadow: 10px 0 0 0 #4a0e0e;
+}
+
+/* === 嘲讽 — 暗紫底，半闭眼，歪嘴笑 === */
+.face-taunt {
+  background: linear-gradient(140deg, #9b7ec4 0%, #6c4d9e 100%);
+}
+.face-taunt::before {
+  top: 34%; left: 50%; transform: translateX(-50%);
+  width: 16px; height: 4px;
+  border-top: 2px solid #2d1048;
+  border-radius: 50%;
+  -webkit-mask-image: linear-gradient(
+    90deg,
+    #000 0%, #000 32%, transparent 32%, transparent 42%,
+    #000 42%, #000 100%
+  );
+  mask-image: linear-gradient(
+    90deg,
+    #000 0%, #000 32%, transparent 32%, transparent 42%,
+    #000 42%, #000 100%
+  );
+}
+.face-taunt::after {
+  bottom: 22%; left: 40%;
+  width: 10px; height: 5px;
+  border-bottom: 2px solid #2d1048;
+  border-radius: 0 0 7px 7px;
+  transform: rotate(-10deg);
+}
+
+/* === 流泪 — 浅蓝底，大圆眼，泪滴，波浪嘴 === */
+.face-crying {
+  background: linear-gradient(140deg, #7ec8e8 0%, #4a90b8 100%);
+}
+.face-crying::before {
+  top: 34%; left: 50%; transform: translateX(-50%);
+  width: 6px; height: 4px;
+  border-radius: 50%;
+  background: #153850;
+  box-shadow: 12px 0 0 0 #153850;
+}
+.face-crying::after {
+  bottom: 20%; left: 50%; transform: translateX(-50%);
+  width: 11px; height: 5px;
+  border-bottom: 2px solid #153850;
+  border-radius: 50%;
+  box-shadow: -6px -8px 0 -1px #5bb8e0, 6px -8px 0 -1px #5bb8e0;
+}
+
+/* ─── 弹窗表情（内层 face-inner 复用按钮五官，外层负责定位+动画）─── */
+.face-pop {
+  width: 72px; height: 72px;
+  position: fixed;
+  z-index: 300;
+  pointer-events: none;
+  animation: emote-float 2.2s ease-out forwards;
+}
+.face-inner {
+  width: 100%; height: 100%;
+  position: absolute;
+  border-radius: 50%;
+  border: 3px solid rgba(255,255,255,.18);
+  box-shadow: 0 8px 32px rgba(0,0,0,.4);
+}
+/* 让 face-inner 的 ::before/::after 生成出来 */
+.face-inner::before,
+.face-inner::after {
+  content: ''; position: absolute;
+}
+/* scale 放大：44px 的五官坐标系等比放大到 72px (72/44 ≈ 1.64) */
+.face-pop .face-inner {
+  transform: scale(1.62);
+  transform-origin: center;
+}
+
+/* 弹窗位置：对手上方 / 自己下方 */
+.face-pop.from-opp {
+  top: 12%; left: 50%;
+  transform: translateX(-50%);
+}
+.face-pop.from-self {
+  bottom: 20%; left: 50%;
+  transform: translateX(-50%);
+}
+
+/* 浮空动画：弹入 → 上浮 → 淡出 */
+@keyframes emote-float {
+  0%   { opacity: 0; transform: translate(-50%, 12px) scale(.25); }
+  10%  { opacity: 1; transform: translate(-50%, -4px) scale(1.18); }
+  18%  { transform: translate(-50%, -10px) scale(1); }
+  60%  { opacity: .8;  transform: translate(-50%, -48px) scale(.92); }
+  100% { opacity: 0;   transform: translate(-50%, -90px) scale(.78); }
+}
