@@ -53,7 +53,7 @@ section('牌堆构成与配置');
   for (const id in CARD_CONFIG.ANIONS) total += CARD_CONFIG.ANIONS[id].count;
   for (const id in CARD_CONFIG.ITEMS) total += CARD_CONFIG.ITEMS[id].count;
   eq(deck.length, total, '牌堆总数与配置一致');
-  ok(CARD_CONFIG.SETTINGS.drawPerTurn === 2, 'drawPerTurn=2');
+  eq(CARD_CONFIG.SETTINGS.drawPerTurn, 1, 'drawPerTurn=1');
 }
 
 // ---------------------------------------------------------------------------

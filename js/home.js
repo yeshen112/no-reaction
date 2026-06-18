@@ -24,11 +24,6 @@
     location.href = 'game.html';
   }
 
-  // ---- 本地双人热座 ----
-  $('btn-local').addEventListener('click', () => {
-    go({ mode: 'local', playerNames: ['玩家1', '玩家2'] });
-  });
-
   // ---- 联机：创建房间 ----
   $('btn-create').addEventListener('click', async () => {
     if (!window.Network || !Network.isConfigured()) {

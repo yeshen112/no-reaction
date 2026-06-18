@@ -44,7 +44,7 @@ const ITEMS = {
 // 初始与游戏设置
 const SETTINGS = {
   initialHandSize: 7,
-  drawPerTurn: 2,
+  drawPerTurn: 1,
   defaultPlayers: 2,
 };
 

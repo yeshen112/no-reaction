@@ -18,13 +18,6 @@
       </div>
 
       <div class="action-block">
-        <button id="btn-local" class="btn btn-primary">本地双人（同屏热座）</button>
-        <p class="hint">同一台设备轮流操作，无需联网。</p>
-      </div>
-
-      <div class="divider"><span>或 联机对战</span></div>
-
-      <div class="action-block">
         <button id="btn-create" class="btn">创建房间</button>
         <p class="hint">生成 6 位房间码，发给好友加入。</p>
       </div>
@@ -38,18 +31,64 @@
     </section>
 
     <details class="rules-fold">
-      <summary>游戏规则速览</summary>
+      <summary>游戏规则</summary>
       <div class="rules-body">
-        <p><strong>目标：</strong>轮流向反应区打出离子牌，<em>不要让反应区发生反应</em>。迫使沉淀或气体反应发生、且无法用道具解除的玩家判负。</p>
+
+        <h3>目标</h3>
+        <p>轮流向公共<strong>反应区</strong>打出离子牌，<em>不要让反应区发生化学反应</em>。<br>
+        打出的牌触发了沉淀或气体反应、又无法用道具解除的玩家判负。</p>
+
+        <h3>每回合流程</h3>
+        <ol>
+          <li><strong>摸牌</strong>：从牌堆摸 1 张牌。</li>
+          <li><strong>出牌</strong>：必须打出 1 张<em>离子牌</em>到反应区；也可打出<em>催化剂</em>代替（见下）。<br>
+              若手牌中既无离子牌也无催化剂，进入<strong>惩罚阶段</strong>：额外摸 2 张，并将手中所有道具牌移给对手，然后跳过出牌。</li>
+          <li><strong>道具阶段</strong>（可选）：可打出任意数量的防守/中性道具来预防反应。完成后点「确认结束」。</li>
+          <li><strong>反应判定</strong>：此时若反应区存在沉淀或气体反应 → <strong>打出那张牌的你直接判负</strong>。</li>
+        </ol>
+
+        <h3>特殊反应</h3>
         <ul>
-          <li><strong>中和</strong>（H⁺ + OH⁻）自动移除，不判负。</li>
-          <li><strong>沉淀 / 气体</strong>反应触发后进入道具阶段，可用道具解除。</li>
-          <li>道具：过滤、加热、萃取、中和、搅拌、催化剂。</li>
+          <li><strong>中和（H⁺ + OH⁻）</strong>：每次打牌后自动检测并移除，不触发判负。</li>
         </ul>
+
+        <h3>道具牌</h3>
+        <table class="rules-table">
+          <thead><tr><th>道具</th><th>类型</th><th>效果</th></tr></thead>
+          <tbody>
+            <tr><td>过滤</td><td>防守</td><td>移走反应区中一对沉淀离子（阳离子 + 阴离子各一）</td></tr>
+            <tr><td>加热</td><td>防守</td><td>移走反应区中一个参与气体反应的离子</td></tr>
+            <tr><td>萃取</td><td>防守</td><td>将反应区中任意一个离子取回自己手牌</td></tr>
+            <tr><td>中和</td><td>防守</td><td>移走反应区中一个 H⁺ 或 OH⁻（不能处理 NH₄⁺ + OH⁻）</td></tr>
+            <tr><td>搅拌</td><td>中性</td><td>清空整个反应区，所有离子进弃牌堆</td></tr>
+            <tr><td>催化剂</td><td>攻击</td><td>代替离子牌打出。对手下回合必须打出 2 张离子牌（不足则尽力而为）</td></tr>
+          </tbody>
+        </table>
+
+        <h3>主要反应一览</h3>
+        <table class="rules-table">
+          <thead><tr><th>类型</th><th>组合</th><th>产物</th></tr></thead>
+          <tbody>
+            <tr><td rowspan="2">中和<br><small>（自动）</small></td><td>H⁺ + OH⁻</td><td>自动移除</td></tr>
+            <tr><td>— </td><td></td></tr>
+            <tr><td rowspan="4">气体</td><td>H⁺ + CO₃²⁻</td><td>CO₂↑</td></tr>
+            <tr><td>H⁺ + HCO₃⁻</td><td>CO₂↑</td></tr>
+            <tr><td>H⁺ + S²⁻</td><td>H₂S↑</td></tr>
+            <tr><td>NH₄⁺ + OH⁻</td><td>NH₃↑</td></tr>
+            <tr><td rowspan="9">沉淀</td><td>Ba²⁺ + SO₄²⁻</td><td>BaSO₄↓</td></tr>
+            <tr><td>Ba²⁺ + CO₃²⁻</td><td>BaCO₃↓</td></tr>
+            <tr><td>Ca²⁺ + SO₄²⁻ / CO₃²⁻</td><td>CaSO₄↓ / CaCO₃↓</td></tr>
+            <tr><td>Cu²⁺ + OH⁻</td><td>Cu(OH)₂↓（蓝）</td></tr>
+            <tr><td>Fe³⁺ + OH⁻</td><td>Fe(OH)₃↓（红褐）</td></tr>
+            <tr><td>Al³⁺ + OH⁻ / CO₃²⁻</td><td>Al(OH)₃↓ / 双水解</td></tr>
+            <tr><td>Ag⁺ + Cl⁻ / SO₄²⁻ / S²⁻ / PO₄³⁻</td><td>各色沉淀</td></tr>
+            <tr><td>Ba²⁺ / Ca²⁺ + PO₄³⁻</td><td>白色沉淀</td></tr>
+            <tr><td>Cu²⁺ / Ag⁺ + S²⁻</td><td>黑色沉淀</td></tr>
+          </tbody>
+        </table>
+
       </div>
     </details>
-
-    <footer class="home-foot">苏州大学 · No Reaction</footer>
   </main>
 
   <script src="config/cards.js"></script>

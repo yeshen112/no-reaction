@@ -39,38 +39,26 @@
     bannerTimer = setTimeout(() => el.classList.remove('show'), 2600);
   }
 
-  // ---- 视角：当前应由谁操作 ----
-  // 本地模式：始终渲染 activePlayer 的视角（热座）。
-  // 联机模式：渲染「我」的视角（ctx.seat）。
+  // ---- 视角：渲染「我」的座位（ctx.seat）----
   function myView() {
     if (!ctx.state) return null;
-    const viewer = (ctx.mode === 'online') ? ctx.seat : activeSeat(ctx.state);
-    return Engine.viewFor(ctx.state, viewer);
+    return Engine.viewFor(ctx.state, ctx.seat);
   }
-  // 当前轮到操作的座位（出牌/道具/催化剂阶段的 activePlayer）
-  function activeSeat(s) { return s.activePlayer; }
 
-  // 我是否可以现在操作（联机模式下必须是我的回合）
+  // 我是否可以现在操作（必须是我的回合）
   function canActNow(s) {
-    if (ctx.mode === 'local') return true;
     return s.activePlayer === ctx.seat;
   }
 
-  // ---- 启动 ----
+  // ---- 启动（仅联机模式）----
   function boot() {
-    ctx.mode = launch.mode;
-    if (ctx.mode === 'local') {
-      ctx.state = Engine.createGame({ playerNames: launch.playerNames || ['玩家1', '玩家2'] });
-      $('room-tag').hidden = true;
-      render();
-    } else {
-      ctx.role = launch.role;
-      ctx.roomCode = launch.roomCode;
-      $('room-tag').hidden = false;
-      $('room-code-show').textContent = ctx.roomCode;
-      $('waiting-code').textContent = ctx.roomCode;
-      bootOnline();
-    }
+    ctx.role = launch.role;
+    ctx.roomCode = launch.roomCode;
+    ctx.seat = launch.role === 'host' ? 0 : 1;
+    $('room-tag').hidden = false;
+    $('room-code-show').textContent = ctx.roomCode;
+    $('waiting-code').textContent = ctx.roomCode;
+    bootOnline();
   }
 
   // ---- 联机启动 ----
