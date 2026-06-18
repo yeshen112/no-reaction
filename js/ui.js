@@ -139,9 +139,9 @@
     let res;
     switch (action.type) {
       case 'playIon':         res = Engine.playIon(state, seat, p.uid); break;
+      case 'playCatalyst':    res = Engine.playCatalyst(state, seat, p.uid); break;
       case 'playItem':        res = Engine.playItem(state, seat, p.uid, p.params || {}); break;
-      case 'playCatalystIon': res = Engine.playCatalystIon(state, seat, p.uid); break;
-      case 'concede':         res = Engine.concede(state, seat); break;
+      case 'confirmResponse': res = Engine.confirmResponse(state, seat); break;
       default: res = { ok: false, msg: '未知动作' };
     }
     return res;
@@ -164,6 +164,49 @@
     return res;
   }
 
+  // ---- 摸牌动画 ----
+  // 上次渲染时的手牌 uid 集合，用于识别新牌
+  let _prevHandUids = new Set();
+
+  function animateDraw(newUids) {
+    // 找到牌堆 DOM 位置作为动画起点
+    const deckEl = $('deck-stack');
+    const handEl = $('hand');
+    if (!deckEl || !handEl || newUids.length === 0) return;
+
+    const deckRect = deckEl.getBoundingClientRect();
+    const handRect = handEl.getBoundingClientRect();
+
+    newUids.forEach((uid, i) => {
+      // 找到对应手牌元素（刚被 renderHand 插入）
+      const cardEl = handEl.querySelector(`[data-uid="${uid}"]`);
+      if (!cardEl) return;
+
+      const cardRect = cardEl.getBoundingClientRect();
+      const dx = deckRect.left + deckRect.width / 2 - (cardRect.left + cardRect.width / 2);
+      const dy = deckRect.top + deckRect.height / 2 - (cardRect.top + cardRect.height / 2);
+
+      // 从牌堆位置飞入
+      cardEl.style.transition = 'none';
+      cardEl.style.transform = `translate(${dx}px, ${dy}px) scale(.7)`;
+      cardEl.style.opacity = '0';
+
+      requestAnimationFrame(() => {
+        requestAnimationFrame(() => {
+          cardEl.style.transition = `transform .35s cubic-bezier(.22,.7,.3,1.1) ${i * 70}ms,
+                                     opacity .25s ease ${i * 70}ms`;
+          cardEl.style.transform = '';
+          cardEl.style.opacity = '';
+          // 落位后短暂高亮
+          setTimeout(() => {
+            cardEl.classList.add('just-drawn');
+            setTimeout(() => cardEl.classList.remove('just-drawn'), 600);
+          }, 360 + i * 70);
+        });
+      });
+    });
+  }
+
   // ---- 渲染 ----
   function render(lastRes) {
     const v = myView();
@@ -174,12 +217,31 @@
 
     renderOpponent(v);
     renderZone(v, lastRes);
+
+    // 找出本次渲染中新出现的手牌 uid（用于摸牌动画）
+    const me = v.players[v.you];
+    const currentUids = (me.hand || []).filter(c => !c.hidden).map(c => c.uid);
+    const newUids = currentUids.filter(uid => !_prevHandUids.has(uid));
+    _prevHandUids = new Set(currentUids);
+
     renderHand(v);
+    if (newUids.length > 0) animateDraw(newUids);
+
+    renderDeck(v);
     renderActions(v);
     renderLog(v);
 
     // 结束
     if (v.winner != null) showOver(v);
+  }
+
+  function renderDeck(v) {
+    const countEl = $('deck-count');
+    const stackEl = $('deck-stack');
+    if (!countEl || !stackEl) return;
+    countEl.textContent = (v.deckCount || 0) + ' 张';
+    // 牌堆空时降低不透明度
+    stackEl.style.opacity = (v.deckCount || 0) > 0 ? '1' : '0.3';
   }
 
   // 对手区（相对当前视角）
@@ -263,12 +325,18 @@
   function renderHand(v) {
     const me = v.players[v.you];
     $('me-name').textContent = me.name + (ctx.mode === 'local' ? '（请操作）' : '（你）');
-    const phaseLabel = {
-      play: '出牌阶段：打出一张离子牌',
-      item: '道具阶段：使用道具解除反应，或认输',
-      catalyst: '催化剂阶段：打出一张离子牌',
-      over: '游戏结束',
-    }[v.phase] || '';
+    const phaseLabel = (() => {
+      if (v.phase === 'play') {
+        const required = v.requiredPlays || 1;
+        if (required > 1) {
+          return `催化剂效果：出第 ${(v.playsThisTurn || 0) + 1} / ${required} 张离子牌`;
+        }
+        return '出牌阶段：打出一张离子牌（或催化剂）';
+      }
+      if (v.phase === 'response') return '道具阶段：可使用道具，完成后点「确认结束」';
+      if (v.phase === 'over') return '游戏结束';
+      return '';
+    })();
     $('phase-label').textContent = canActNow(ctx.state) ? phaseLabel : '等待对手操作…';
 
     const hand = $('hand');
@@ -278,6 +346,7 @@
 
     mine.forEach(c => {
       const el = cardEl(c, false);
+      el.dataset.uid = c.uid;
       if (actionable && isPlayable(v, c)) {
         el.classList.add('selectable');
         if (ctx.selection && ctx.selection.uid === c.uid) el.classList.add('selected');
@@ -291,37 +360,29 @@
   function isPlayable(v, c) {
     if (v.phase === 'play') {
       if (c.type === 'ion') return true;
-      // 道具：搅拌(neutral)可在出牌阶段；催化剂需无反应
-      const def = ITEMS[c.id];
-      if (!def) return false;
-      if (def.kind === 'neutral') return true;
-      if (c.id === 'catalyst') return Engine.findReactions(v.zone).length === 0;
-      return false; // 防守道具不在出牌阶段
+      // 催化剂可在正常出牌轮（requiredPlays=1）当作离子打出
+      if (c.id === 'catalyst') return (v.requiredPlays || 1) === 1;
+      return false;
     }
-    if (v.phase === 'item') {
-      // 仅防守道具 + 搅拌可用
+    if (v.phase === 'response') {
+      // 防守/中性道具可用，催化剂和离子不可用
       if (c.type !== 'item') return false;
       const def = ITEMS[c.id];
-      return def.kind === 'defense' || def.kind === 'neutral';
-    }
-    if (v.phase === 'catalyst') {
-      return c.type === 'ion';
+      return def && (def.kind === 'defense' || def.kind === 'neutral');
     }
     return false;
   }
 
-  // 操作按钮区（认输、取消选择等）
+  // 操作按钮区（确认结束道具阶段、取消选择等）
   function renderActions(v) {
     const bar = $('hand-actions');
     bar.innerHTML = '';
     if (!canActNow(ctx.state) || v.winner != null) return;
 
-    if (v.phase === 'item') {
-      const concede = mkBtn('认输该反应（判负）', 'btn', () => {
-        if (confirm('确定认输吗？这将直接判负。')) doAction('concede', {});
-      });
-      concede.style.borderColor = 'var(--danger)';
-      bar.appendChild(concede);
+    if (v.phase === 'response') {
+      bar.appendChild(mkBtn('确认结束道具阶段', 'btn', () => {
+        doAction('confirmResponse', {});
+      }));
     }
     if (ctx.pendingItem) {
       bar.appendChild(mkBtn('取消选择', 'btn-mini', () => {
@@ -361,24 +422,26 @@
   function onHandClick(v, card) {
     if (card.type === 'ion') {
       if (v.phase === 'play') return doAction('playIon', { uid: card.uid });
-      if (v.phase === 'catalyst') return doAction('playCatalystIon', { uid: card.uid });
       return;
     }
     // 道具
-    const def = ITEMS[card.id];
-    // 需要点选目标的道具
+    if (card.id === 'catalyst') {
+      if (v.phase === 'play') return doAction('playCatalyst', { uid: card.uid });
+      return;
+    }
+    // 需要点选目标的道具（response 阶段）
     if (['extract', 'heat', 'neutralize'].includes(card.id)) {
       ctx.pendingItem = { itemId: card.id, uid: card.uid };
       ctx.selection = { uid: card.uid };
       render();
       return;
     }
-    // 过滤：默认处理第一对沉淀；若有多对可后续扩展点选
+    // 过滤：默认处理第一对沉淀
     if (card.id === 'filter') {
       return doAction('playItem', { uid: card.uid, params: {} });
     }
-    // 搅拌 / 催化剂：直接生效
-    if (card.id === 'stir' || card.id === 'catalyst') {
+    // 搅拌：直接生效
+    if (card.id === 'stir') {
       return doAction('playItem', { uid: card.uid, params: {} });
     }
   }
@@ -431,7 +494,6 @@
   $('btn-quit').addEventListener('click', () => {
     if (confirm('确定退出当前对局？')) { cleanup(); location.href = 'index.html'; }
   });
-  $('react-ok').addEventListener('click', () => $('react-mask').classList.remove('show'));
 
   function cleanup() {
     if (ctx.sub) { try { ctx.sub.close(); } catch (_) {} }

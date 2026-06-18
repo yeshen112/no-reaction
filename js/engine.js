@@ -3,6 +3,13 @@
  * 状态为纯数据（可 JSON 序列化），所有操作就地更新 state 并返回 { ok, msg }，
  * 便于通过网络整份同步状态。
  *
+ * 回合流程：
+ *   摸牌（drawPerTurn 张）
+ *   → 出牌阶段（play）：出 1 张离子 or 催化剂；被催化剂标记时须出 2 张离子；
+ *                        无离子无催化剂 → 惩罚阶段（自动）
+ *   → 道具阶段（response）：任意张防守/中性道具，点「确认结束」
+ *   → 反应判定（自动）：有反应 → 判负；无反应 → 换手
+ *
  * 同时支持浏览器 (window.Engine) 与 Node (module.exports)。
  */
 (function (root, factory) {
@@ -44,8 +51,6 @@
     return c.type === 'ion' ? ionSymbol(c.id) : (ITEMS[c.id] ? ITEMS[c.id].name : c.id);
   }
 
-  function symbolToCard(c) { return cardLabel(c); }
-
   // ---- 建立牌堆 ----
   function buildDeck() {
     const cards = [];
@@ -58,11 +63,13 @@
   function opponentOf(state, idx) { return (idx + 1) % state.players.length; }
   function isIon(card) { return card && card.type === 'ion'; }
   function handHasIon(state, idx) { return state.players[idx].hand.some(isIon); }
+  function handHasCatalyst(state, idx) {
+    return state.players[idx].hand.some(c => c.type === 'item' && c.id === 'catalyst');
+  }
 
   function log(state, msg) { state.log.push(msg); if (state.log.length > 200) state.log.shift(); }
 
   // ---- 反应扫描 ----
-  // 扫描反应区内所有无序离子对，返回需要处理的（沉淀/气体）反应列表。
   function findReactions(zone) {
     const out = [];
     for (let i = 0; i < zone.length; i++) {
@@ -109,7 +116,6 @@
     state.discard.push(c);
     return c;
   }
-  // 返回某离子当前参与的所有反应（沉淀/气体）。
   function reactionsInvolving(state, uid) {
     const me = zoneFind(state, uid);
     if (!me) return [];
@@ -132,12 +138,13 @@
     _uid = 0;
     const rng = mulberry32(seed);
     const deck = shuffle(buildDeck(), rng);
-    const players = names.map(n => ({ name: n, hand: [] }));
+    const players = names.map(n => ({ name: n, hand: [], forcedIons: 0 }));
     const state = {
       seed, players, deck, discard: [], zone: [],
       turn: 0, activePlayer: 0, phase: 'play',
-      pending: null, winner: null, loser: null,
-      catalyst: null, log: [], started: true,
+      playsThisTurn: 0, requiredPlays: 1,
+      winner: null, loser: null,
+      log: [], started: true,
     };
     // 发初始手牌
     for (let i = 0; i < SETTINGS.initialHandSize; i++) {
@@ -162,23 +169,61 @@
     return c;
   }
 
-  // 开始某玩家的回合：摸 1 张，进入出牌阶段。
+  // 开始某玩家的回合。
   function startTurn(state, idx, skipDraw) {
     state.turn = idx;
     state.activePlayer = idx;
+    state.playsThisTurn = 0;
+
+    // 读取并消费 forcedIons 标记
+    const forced = state.players[idx].forcedIons || 0;
+    state.players[idx].forcedIons = 0;
+    state.requiredPlays = forced > 0 ? forced : 1;
+
+    if (skipDraw) {
+      log(state, `${state.players[idx].name} 获得起始手牌。`);
+      state.phase = 'play';
+      return { ok: true };
+    }
+
+    // 惩罚检查在摸牌前：若手里已无离子且无催化剂，触发惩罚
+    if (!handHasIon(state, idx) && !handHasCatalyst(state, idx)) {
+      applyPenalty(state, idx);
+      return { ok: true };
+    }
+
+    // 正常摸牌
+    const drawCount = SETTINGS.drawPerTurn || 1;
+    let drawn = 0;
+    for (let i = 0; i < drawCount; i++) {
+      if (drawCard(state, idx)) drawn++;
+    }
+    log(state, `${state.players[idx].name} 摸了 ${drawn} 张牌。`);
+
     state.phase = 'play';
-    state.pending = null;
-    if (!skipDraw) {
-      const c = drawCard(state, idx);
-      if (c) log(state, `${state.players[idx].name} 摸了一张 ${cardLabel(c)}。`);
-    } else {
-      log(state, `${state.players[idx].name} 摸了起始手牌。`);
+    if (forced > 0) {
+      log(state, `${state.players[idx].name} 受催化剂影响，本回合须出 ${state.requiredPlays} 张离子牌。`);
     }
     return { ok: true };
   }
 
+  // 惩罚阶段：额外摸2张，把手里所有道具转给对手。
+  function applyPenalty(state, idx) {
+    const opp = opponentOf(state, idx);
+    // 额外摸 2 张
+    let drawn = 0;
+    for (let i = 0; i < 2; i++) {
+      if (drawCard(state, idx)) drawn++;
+    }
+    // 把所有道具移给对手
+    const items = state.players[idx].hand.filter(c => c.type === 'item');
+    state.players[idx].hand = state.players[idx].hand.filter(c => c.type !== 'item');
+    state.players[opp].hand.push(...items);
+    log(state, `${state.players[idx].name} 没有离子牌，触发惩罚：额外摸 ${drawn} 张，${items.length} 张道具转给 ${state.players[opp].name}。`);
+    state.phase = 'response';
+  }
+
   // ---- 出牌：离子 ----
-  // 玩家在出牌阶段打出一张离子牌到反应区。
   function playIon(state, idx, uid) {
     if (state.winner != null) return { ok: false, msg: '游戏已结束。' };
     if (state.phase !== 'play') return { ok: false, msg: '当前不是出牌阶段。' };
@@ -187,90 +232,79 @@
     const ci = hand.findIndex(c => c.uid === uid);
     if (ci < 0) return { ok: false, msg: '手牌中没有这张牌。' };
     if (hand[ci].type !== 'ion') return { ok: false, msg: '这不是离子牌。' };
+
     const card = hand.splice(ci, 1)[0];
     state.zone.push(card);
-    state.lastPlayer = idx;
     log(state, `${state.players[idx].name} 打出 ${ionSymbol(card.id)} 到反应区。`);
     autoNeutralize(state);
-    return resolveAfterPlay(state, idx, card);
-  }
 
-  // 出牌后判定：若有沉淀/气体反应则进入道具阶段，否则结束回合。
-  function resolveAfterPlay(state, idx, card) {
-    const reacts = card ? reactionsInvolving(state, card.uid) : findReactions(state.zone);
-    if (reacts.length > 0) {
-      const r = reacts[0];
-      state.phase = 'item';
-      state.pending = {
-        resolver: idx,
-        triggerUid: card ? card.uid : r.aUid,
-        reaction: r,
-      };
-      const sym = card ? `${ionSymbol(card.id)} 与 ${ionSymbol(r.otherId)}` : '反应区离子';
-      log(state, `触发${r.type === 'gas' ? '气体' : '沉淀'}反应：${sym} → ${r.product}。${state.players[idx].name} 进入道具阶段。`);
-      return { ok: true, reaction: r };
+    state.playsThisTurn++;
+
+    // 判断是否完成本轮出牌要求
+    if (state.playsThisTurn >= state.requiredPlays) {
+      state.phase = 'response';
+      return { ok: true };
     }
-    return endTurn(state, idx);
+
+    // 还需继续出牌，但若已无离子则自动进入 response
+    if (!handHasIon(state, idx)) {
+      log(state, `${state.players[idx].name} 没有更多离子牌，出牌结束。`);
+      state.phase = 'response';
+    }
+    return { ok: true };
   }
 
-  // ---- 出牌：道具 ----
+  // ---- 出牌：催化剂（替代离子）----
+  function playCatalyst(state, idx, uid) {
+    if (state.winner != null) return { ok: false, msg: '游戏已结束。' };
+    if (state.phase !== 'play') return { ok: false, msg: '当前不是出牌阶段。' };
+    if (state.activePlayer !== idx) return { ok: false, msg: '还没轮到你。' };
+    // 催化剂只能在正常出牌时用（requiredPlays=1），被强制出牌时不可用
+    if (state.requiredPlays > 1) return { ok: false, msg: '受催化剂效果影响时，只能出离子牌。' };
+    const hand = state.players[idx].hand;
+    const ci = hand.findIndex(c => c.uid === uid);
+    if (ci < 0) return { ok: false, msg: '手牌中没有这张牌。' };
+    if (hand[ci].id !== 'catalyst') return { ok: false, msg: '这不是催化剂。' };
+
+    const card = hand.splice(ci, 1)[0];
+    state.discard.push(card);
+    const opp = opponentOf(state, idx);
+    state.players[opp].forcedIons = 2;
+    log(state, `${state.players[idx].name} 打出催化剂！${state.players[opp].name} 下回合须出 2 张离子牌。`);
+    state.phase = 'response';
+    return { ok: true };
+  }
+
+  // ---- 出牌：道具（response 阶段）----
   function playItem(state, idx, uid, params) {
     if (state.winner != null) return { ok: false, msg: '游戏已结束。' };
     params = params || {};
+    if (state.phase !== 'response') return { ok: false, msg: '道具只能在道具阶段使用。' };
+    if (state.activePlayer !== idx) return { ok: false, msg: '还没轮到你。' };
+
     const hand = state.players[idx].hand;
     const ci = hand.findIndex(c => c.uid === uid);
     if (ci < 0) return { ok: false, msg: '手牌中没有这张牌。' };
     if (hand[ci].type !== 'item') return { ok: false, msg: '这不是道具牌。' };
     const itemId = hand[ci].id;
+    if (itemId === 'catalyst') return { ok: false, msg: '催化剂只能在出牌阶段当作离子牌打出。' };
 
-    // 催化剂：仅在出牌阶段、出完离子且无反应时打出
-    if (itemId === 'catalyst') {
-      if (state.phase !== 'play' || state.activePlayer !== idx) {
-        return { ok: false, msg: '催化剂只能在你的出牌阶段、且反应区无反应时打出。' };
-      }
-      if (findReactions(state.zone).length > 0) {
-        return { ok: false, msg: '反应区当前存在反应，不能打出催化剂。' };
-      }
-      const card = hand.splice(ci, 1)[0];
-      state.discard.push(card);
-      return startCatalyst(state, idx);
-    }
-
-    // 其余道具：搅拌为中性（出牌阶段也可用），防守道具需在道具阶段
     const def = ITEMS[itemId];
-    if (def.kind === 'defense' && state.phase !== 'item') {
-      return { ok: false, msg: '防守道具只能在道具阶段使用。' };
-    }
-    if (state.phase === 'item' && state.pending && state.pending.resolver !== idx) {
-      return { ok: false, msg: '当前由对手处理反应。' };
-    }
-
     const res = applyItem(state, idx, itemId, params);
     if (!res.ok) return res;
+
     // 成功使用后移除该道具
     const ci2 = hand.findIndex(c => c.uid === uid);
     if (ci2 >= 0) { const card = hand.splice(ci2, 1)[0]; state.discard.push(card); }
     log(state, `${state.players[idx].name} 使用了「${def.name}」。`);
-
-    // 道具使用后重新判定反应区
     autoNeutralize(state);
-    if (state.phase === 'item') {
-      const remaining = findReactions(state.zone);
-      if (remaining.length === 0) {
-        log(state, '反应已全部解除。');
-        return endTurn(state, state.pending ? state.pending.resolver : idx);
-      } else {
-        state.pending.reaction = Object.assign({ otherId: zoneFind(state, remaining[0].bUid) ? zoneFind(state, remaining[0].bUid).id : null }, remaining[0]);
-      }
-    }
     return { ok: true };
   }
 
-  // 应用单个道具的效果。params 视道具而定。
+  // 应用单个道具的效果。
   function applyItem(state, idx, itemId, params) {
     switch (itemId) {
       case 'filter': {
-        // 移走一对沉淀离子
         const reacts = findReactions(state.zone).filter(r => r.type === 'precipitate');
         if (reacts.length === 0) return { ok: false, msg: '反应区没有沉淀反应可过滤。' };
         let target = reacts[0];
@@ -285,7 +319,6 @@
         return { ok: true };
       }
       case 'heat': {
-        // 移走一个参与气体反应的离子
         const gas = findReactions(state.zone).filter(r => r.type === 'gas');
         if (gas.length === 0) return { ok: false, msg: '反应区没有气体反应，加热无效。' };
         let uid = params.uid;
@@ -294,7 +327,6 @@
         return { ok: true };
       }
       case 'extract': {
-        // 把指定离子取回手牌
         const uid = params.uid;
         const c = zoneFind(state, uid);
         if (!c) return { ok: false, msg: '反应区没有该离子。' };
@@ -303,14 +335,12 @@
         return { ok: true };
       }
       case 'neutralize': {
-        // 移走一个 H⁺ 或 OH⁻（须参与反应）
         const uid = params.uid;
         const c = zoneFind(state, uid);
         if (!c) return { ok: false, msg: '反应区没有该离子。' };
         if (c.id !== 'H' && c.id !== 'OH') return { ok: false, msg: '中和只能移走 H⁺ 或 OH⁻。' };
         const involved = reactionsInvolving(state, uid);
         if (involved.length === 0) return { ok: false, msg: '该离子未参与反应。' };
-        // 不能处理 NH₄⁺ + OH⁻
         if (involved.every(r => r.otherId === 'NH4')) {
           return { ok: false, msg: '中和不能处理 NH₄⁺ + OH⁻ 反应。' };
         }
@@ -318,7 +348,6 @@
         return { ok: true };
       }
       case 'stir': {
-        // 清空反应区
         if (state.zone.length === 0) return { ok: false, msg: '反应区已空。' };
         state.discard.push(...state.zone);
         state.zone = [];
@@ -329,91 +358,32 @@
     }
   }
 
-  // ---- 放弃道具阶段，认输该反应 ----
-  function concede(state, idx) {
-    if (state.phase !== 'item') return { ok: false, msg: '当前不是道具阶段。' };
-    if (!state.pending || state.pending.resolver !== idx) return { ok: false, msg: '不是你在处理反应。' };
-    declareLoser(state, idx);
-    return { ok: true };
+  // ---- 确认结束道具阶段，触发反应判定 ----
+  function confirmResponse(state, idx) {
+    if (state.winner != null) return { ok: false, msg: '游戏已结束。' };
+    if (state.phase !== 'response') return { ok: false, msg: '当前不是道具阶段。' };
+    if (state.activePlayer !== idx) return { ok: false, msg: '还没轮到你。' };
+
+    const reacts = findReactions(state.zone);
+    if (reacts.length > 0) {
+      const r = reacts[0];
+      log(state, `反应区存在${r.type === 'gas' ? '气体' : '沉淀'}反应：${r.product}，${state.players[idx].name} 判负！`);
+      declareLoser(state, idx);
+      return { ok: true, lost: true, reaction: r };
+    }
+    return endTurn(state, idx);
   }
 
   function declareLoser(state, idx) {
     state.loser = idx;
     state.winner = opponentOf(state, idx);
     state.phase = 'over';
-    log(state, `${state.players[idx].name} 无法解除反应，判负！${state.players[state.winner].name} 获胜！`);
-  }
-
-  // ---- 催化剂流程 ----
-  function startCatalyst(state, userIdx) {
-    log(state, `${state.players[userIdx].name} 打出催化剂！双方各出一张离子牌后统一判定。`);
-    state.catalyst = { user: userIdx, step: 'user' };
-    state.phase = 'catalyst';
-    state.activePlayer = userIdx;
-    // 使用者必须先出一张离子（有牌必须出）
-    if (!handHasIon(state, userIdx)) {
-      // 使用者无离子牌，跳到对手
-      log(state, `${state.players[userIdx].name} 没有离子牌可出，跳过。`);
-      return catalystToOpponent(state);
-    }
-    return { ok: true, needIon: true };
-  }
-
-  // 催化剂阶段出离子
-  function playCatalystIon(state, idx, uid) {
-    if (state.phase !== 'catalyst') return { ok: false, msg: '当前不是催化剂阶段。' };
-    if (state.activePlayer !== idx) return { ok: false, msg: '还没轮到你出牌。' };
-    const hand = state.players[idx].hand;
-    const ci = hand.findIndex(c => c.uid === uid);
-    if (ci < 0 || hand[ci].type !== 'ion') return { ok: false, msg: '请选择一张离子牌。' };
-    const card = hand.splice(ci, 1)[0];
-    state.zone.push(card);
-    log(state, `${state.players[idx].name} 在催化剂下打出 ${ionSymbol(card.id)}。`);
-    if (state.catalyst.step === 'user') {
-      return catalystToOpponent(state);
-    } else {
-      return finishCatalyst(state);
-    }
-  }
-
-  function catalystToOpponent(state) {
-    const opp = opponentOf(state, state.catalyst.user);
-    state.catalyst.step = 'opp';
-    state.activePlayer = opp;
-    if (!handHasIon(state, opp)) {
-      log(state, `${state.players[opp].name} 没有离子牌可出，跳过。`);
-      return finishCatalyst(state);
-    }
-    return { ok: true, needIon: true };
-  }
-
-  // 催化剂双方出完后统一判定。
-  function finishCatalyst(state) {
-    const user = state.catalyst.user;
-    state.catalyst = null;
-    autoNeutralize(state);
-    const reacts = findReactions(state.zone);
-    if (reacts.length > 0) {
-      // 由引发者（催化剂使用者）进入道具阶段处理
-      const r = reacts[0];
-      state.phase = 'item';
-      state.activePlayer = user;
-      state.pending = {
-        resolver: user,
-        triggerUid: r.aUid,
-        reaction: Object.assign({ otherId: zoneFind(state, r.bUid) ? zoneFind(state, r.bUid).id : null }, r),
-      };
-      log(state, `催化剂判定触发反应 → ${r.product}。${state.players[user].name} 进入道具阶段。`);
-      return { ok: true, reaction: r };
-    }
-    log(state, '催化剂结算：反应区无反应。');
-    return endTurn(state, user);
+    log(state, `${state.players[state.winner].name} 获胜！`);
   }
 
   // ---- 结束回合，轮到对手 ----
   function endTurn(state, idx) {
     if (state.winner != null) return { ok: true };
-    state.pending = null;
     const next = opponentOf(state, idx);
     startTurn(state, next, false);
     return { ok: true, endedTurn: true };
@@ -425,7 +395,7 @@
     v.you = idx;
     v.players = v.players.map((p, i) => {
       if (i === idx) return p;
-      return { name: p.name, handCount: p.hand.length, hand: p.hand.map(() => ({ hidden: true })) };
+      return { name: p.name, handCount: p.hand.length, hand: p.hand.map(() => ({ hidden: true })), forcedIons: p.forcedIons };
     });
     v.deckCount = state.deck.length;
     v.discardCount = state.discard.length;
@@ -435,11 +405,11 @@
 
   return {
     createGame, drawCard, startTurn, endTurn,
-    playIon, playItem, playCatalystIon, concede,
+    playIon, playItem, playCatalyst, confirmResponse,
     findReactions, reactionsInvolving, autoNeutralize,
     viewFor,
     // 辅助导出（UI/测试用）
-    ionKind, ionSymbol, cardLabel, isIon, handHasIon, opponentOf, buildDeck,
+    ionKind, ionSymbol, cardLabel, isIon, handHasIon, handHasCatalyst, opponentOf, buildDeck,
     _internal: { mulberry32, shuffle, makeCard },
   };
 });

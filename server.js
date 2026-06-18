@@ -20,6 +20,7 @@
 const http = require('http');
 const fs = require('fs');
 const path = require('path');
+const os = require('os');
 
 const PORT = process.env.PORT || 5173;
 const ROOT = __dirname;
@@ -248,7 +249,14 @@ const server = http.createServer((req, res) => {
 });
 
 server.listen(PORT, () => {
+  const lanIps = Object.values(os.networkInterfaces())
+    .flat()
+    .filter(i => i.family === 'IPv4' && !i.internal)
+    .map(i => i.address);
   console.log(`No Reaction 已启动： http://localhost:${PORT}`);
-  console.log(`局域网联机：同 WiFi 的人访问  http://<本机内网IP>:${PORT}`);
+  if (lanIps.length) {
+    console.log(`局域网联机（以下地址均可）：`);
+    lanIps.forEach(ip => console.log(`  http://${ip}:${PORT}`));
+  }
   console.log(`远程联机  ：用樱花 frp 把 ${PORT} 端口映射到公网即可。`);
 });

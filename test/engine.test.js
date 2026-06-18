@@ -2,7 +2,7 @@
  * 引擎测试 —— 纯 Node 运行，无需第三方依赖。
  *   node test/engine.test.js
  *
- * 用极简断言框架，覆盖：反应判定、中和、道具效果、催化剂、胜负。
+ * 覆盖：反应判定、中和、道具效果、催化剂新流程、惩罚阶段、强制出牌、胜负。
  */
 const Engine = require('../js/engine.js');
 const REACTIONS = require('../js/reactions.js');
@@ -17,17 +17,15 @@ function ok(cond, name) {
 function eq(a, b, name) { ok(a === b, `${name} (期望 ${b}, 实际 ${a})`); }
 function section(t) { console.log('\n=== ' + t + ' ==='); }
 
-// ---- 工具：手工构造一局，直接操纵 zone/hand 便于定向测试 ----
+// ---- 工具：手工构造一局 ----
 function freshGame() {
   return Engine.createGame({ seed: 12345, playerNames: ['A', 'B'] });
 }
-// 在指定玩家手里塞一张牌，返回 uid
 function giveCard(state, idx, type, id) {
   const c = Engine._internal.makeCard(type, id);
   state.players[idx].hand.push(c);
   return c.uid;
 }
-// 直接往反应区放离子
 function seedZone(state, id) {
   const c = Engine._internal.makeCard('ion', id);
   state.zone.push(c);
@@ -47,7 +45,7 @@ section('反应判定表 checkPair');
 }
 
 // ---------------------------------------------------------------------------
-section('牌堆构成');
+section('牌堆构成与配置');
 {
   const deck = Engine.buildDeck();
   let total = 0;
@@ -55,62 +53,116 @@ section('牌堆构成');
   for (const id in CARD_CONFIG.ANIONS) total += CARD_CONFIG.ANIONS[id].count;
   for (const id in CARD_CONFIG.ITEMS) total += CARD_CONFIG.ITEMS[id].count;
   eq(deck.length, total, '牌堆总数与配置一致');
+  ok(CARD_CONFIG.SETTINGS.drawPerTurn === 2, 'drawPerTurn=2');
 }
 
 // ---------------------------------------------------------------------------
 section('初始发牌');
 {
   const s = freshGame();
-  // 先手首回合不额外摸牌（抵消先手优势），双方初始均为 7 张
-  eq(s.players[0].hand.length, CARD_CONFIG.SETTINGS.initialHandSize, 'A 先手首回合不摸牌，手牌数');
+  eq(s.players[0].hand.length, CARD_CONFIG.SETTINGS.initialHandSize, 'A 初始手牌数');
   eq(s.players[1].hand.length, CARD_CONFIG.SETTINGS.initialHandSize, 'B 初始手牌数');
   eq(s.activePlayer, 0, 'A 先手');
   eq(s.phase, 'play', '初始为出牌阶段');
+  eq(s.requiredPlays, 1, '初始 requiredPlays=1');
+  eq(s.playsThisTurn, 0, '初始 playsThisTurn=0');
 }
 
 // ---------------------------------------------------------------------------
 section('中和自动处理');
 {
   const s = freshGame();
+  s.players[0].hand = [];
+  s.zone = [];
   seedZone(s, 'H');
   const uid = giveCard(s, 0, 'ion', 'OH');
+  s.phase = 'play';
+  s.activePlayer = 0;
+  s.playsThisTurn = 0;
+  s.requiredPlays = 1;
   const r = Engine.playIon(s, 0, uid);
   ok(r.ok, '打出 OH 成功');
   eq(s.zone.length, 0, 'H+OH 自动中和清空反应区');
   ok(s.discard.length >= 2, '两张牌进入弃牌区');
-  eq(s.activePlayer, 1, '中和后正常结束回合轮到 B');
+  eq(s.phase, 'response', '出牌后进入 response 阶段');
+  // 确认结束，无反应 → 换手
+  const r2 = Engine.confirmResponse(s, 0);
+  ok(r2.ok, 'confirmResponse 成功');
+  eq(s.activePlayer, 1, '中和后轮到 B');
 }
 
 // ---------------------------------------------------------------------------
-section('沉淀反应 → 道具阶段 → 过滤解除');
+section('出牌 → response → 过滤解除沉淀');
 {
   const s = freshGame();
+  s.players[0].hand = [];
+  s.zone = [];
   seedZone(s, 'Ba');
   const uid = giveCard(s, 0, 'ion', 'SO4');
-  const r = Engine.playIon(s, 0, uid);
-  ok(r.ok && r.reaction, 'Ba+SO4 触发沉淀反应');
-  eq(s.phase, 'item', '进入道具阶段');
-  eq(s.pending.resolver, 0, 'A 处理反应');
+  s.phase = 'play';
+  s.activePlayer = 0;
+  s.playsThisTurn = 0;
+  s.requiredPlays = 1;
 
+  const r = Engine.playIon(s, 0, uid);
+  ok(r.ok, 'Ba+SO4 打出成功');
+  eq(s.phase, 'response', '进入 response 阶段');
+
+  // 使用过滤
   const filterUid = giveCard(s, 0, 'item', 'filter');
   const fr = Engine.playItem(s, 0, filterUid, {});
   ok(fr.ok, '过滤使用成功');
-  eq(s.zone.length, 0, '过滤移走一对沉淀离子');
-  eq(s.activePlayer, 1, '解除后轮到 B');
+  eq(s.zone.length, 0, '过滤移走沉淀对');
+
+  // 确认结束，无反应 → 换手
+  const cr = Engine.confirmResponse(s, 0);
+  ok(cr.ok && !cr.lost, '确认结束：无反应');
+  eq(s.activePlayer, 1, '轮到 B');
+}
+
+// ---------------------------------------------------------------------------
+section('confirmResponse 有反应 → 判负');
+{
+  const s = freshGame();
+  s.players[0].hand = [];
+  s.zone = [];
+  seedZone(s, 'Ba');
+  const uid = giveCard(s, 0, 'ion', 'SO4');
+  s.phase = 'play';
+  s.activePlayer = 0;
+  s.playsThisTurn = 0;
+  s.requiredPlays = 1;
+  Engine.playIon(s, 0, uid);
+  eq(s.phase, 'response', '进入 response 阶段');
+
+  // 不用任何道具，直接确认 → A 判负
+  const cr = Engine.confirmResponse(s, 0);
+  ok(cr.ok && cr.lost, '确认结束：有反应，判负');
+  eq(s.loser, 0, 'A 判负');
+  eq(s.winner, 1, 'B 获胜');
+  eq(s.phase, 'over', '游戏结束');
 }
 
 // ---------------------------------------------------------------------------
 section('气体反应 → 加热解除');
 {
   const s = freshGame();
+  s.players[0].hand = [];
+  s.zone = [];
   seedZone(s, 'CO3');
   const uid = giveCard(s, 0, 'ion', 'H');
+  s.phase = 'play';
+  s.activePlayer = 0;
+  s.playsThisTurn = 0;
+  s.requiredPlays = 1;
   Engine.playIon(s, 0, uid);
-  eq(s.phase, 'item', 'H+CO3 进入道具阶段');
+  eq(s.phase, 'response', 'H+CO3 进入 response');
+
   // 过滤不能解气体
   const filterUid = giveCard(s, 0, 'item', 'filter');
   const bad = Engine.playItem(s, 0, filterUid, {});
   ok(!bad.ok, '过滤无法处理气体反应');
+
   const heatUid = giveCard(s, 0, 'item', 'heat');
   const hr = Engine.playItem(s, 0, heatUid, {});
   ok(hr.ok, '加热使用成功');
@@ -118,26 +170,16 @@ section('气体反应 → 加热解除');
 }
 
 // ---------------------------------------------------------------------------
-section('道具用尽判负');
-{
-  const s = freshGame();
-  seedZone(s, 'Ag');
-  const uid = giveCard(s, 0, 'ion', 'Cl');
-  Engine.playIon(s, 0, uid);
-  eq(s.phase, 'item', 'Ag+Cl 进入道具阶段');
-  const r = Engine.concede(s, 0);
-  ok(r.ok, 'A 认输该反应');
-  eq(s.loser, 0, 'A 判负');
-  eq(s.winner, 1, 'B 获胜');
-  eq(s.phase, 'over', '游戏结束');
-}
-
-// ---------------------------------------------------------------------------
 section('搅拌清空反应区');
 {
   const s = freshGame();
+  s.players[0].hand = [];
+  s.zone = [];
   seedZone(s, 'Ba');
-  seedZone(s, 'Na');
+  seedZone(s, 'SO4');
+  // 手工置于 response 阶段
+  s.phase = 'response';
+  s.activePlayer = 0;
   const stirUid = giveCard(s, 0, 'item', 'stir');
   const r = Engine.playItem(s, 0, stirUid, {});
   ok(r.ok, '搅拌成功');
@@ -148,14 +190,12 @@ section('搅拌清空反应区');
 section('萃取取回离子');
 {
   const s = freshGame();
+  s.players[0].hand = [];
+  s.zone = [];
   seedZone(s, 'Ba');
   const tUid = seedZone(s, 'SO4');
-  const uid = giveCard(s, 0, 'ion', 'Cl'); // 占位先触发？改为直接道具阶段模拟
-  // 手工进入道具阶段
-  s.phase = 'item';
+  s.phase = 'response';
   s.activePlayer = 0;
-  s.pending = { resolver: 0, triggerUid: tUid, reaction: {} };
-  const handBefore = s.players[0].hand.length;
   const exUid = giveCard(s, 0, 'item', 'extract');
   const r = Engine.playItem(s, 0, exUid, { uid: tUid });
   ok(r.ok, '萃取成功');
@@ -166,55 +206,115 @@ section('萃取取回离子');
 section('中和道具不能处理 NH4+OH');
 {
   const s = freshGame();
+  s.players[0].hand = [];
+  s.zone = [];
   seedZone(s, 'NH4');
   const ohUid = seedZone(s, 'OH');
-  s.phase = 'item';
+  s.phase = 'response';
   s.activePlayer = 0;
-  s.pending = { resolver: 0, triggerUid: ohUid, reaction: {} };
   const nUid = giveCard(s, 0, 'item', 'neutralize');
   const r = Engine.playItem(s, 0, nUid, { uid: ohUid });
   ok(!r.ok, '中和拒绝处理 NH4+OH');
 }
 
 // ---------------------------------------------------------------------------
-section('催化剂流程');
+section('催化剂新流程：替代离子，标记对手 forcedIons=2');
 {
   const s = freshGame();
-  // 清掉双方手牌，定向放置
   s.players[0].hand = [];
   s.players[1].hand = [];
   s.zone = [];
+  s.phase = 'play';
+  s.activePlayer = 0;
+  s.playsThisTurn = 0;
+  s.requiredPlays = 1;
+  s.players[0].forcedIons = 0;
+  s.players[1].forcedIons = 0;
+
   const catUid = giveCard(s, 0, 'item', 'catalyst');
-  const aIon = giveCard(s, 0, 'ion', 'Ba');
-  const bIon = giveCard(s, 1, 'ion', 'SO4');
-  const r = Engine.playItem(s, 0, catUid, {});
-  ok(r.ok, '催化剂打出');
-  eq(s.phase, 'catalyst', '进入催化剂阶段');
-  eq(s.activePlayer, 0, '使用者先出');
-  const r1 = Engine.playCatalystIon(s, 0, aIon);
-  ok(r1.ok, 'A 出 Ba');
-  eq(s.activePlayer, 1, '轮到 B 出');
-  const r2 = Engine.playCatalystIon(s, 1, bIon);
-  ok(r2.ok, 'B 出 SO4');
-  eq(s.phase, 'item', '催化剂判定触发沉淀，进入道具阶段');
-  eq(s.pending.resolver, 0, '由催化剂使用者处理反应');
+  const r = Engine.playCatalyst(s, 0, catUid);
+  ok(r.ok, '催化剂打出成功');
+  eq(s.phase, 'response', '打出催化剂后进 response');
+  eq(s.players[1].forcedIons, 2, '对手 forcedIons=2');
+  eq(s.zone.length, 0, '催化剂不往反应区放牌');
 }
 
 // ---------------------------------------------------------------------------
-section('催化剂：对手无离子牌则跳过');
+section('催化剂：对手下回合强制出两张离子');
 {
   const s = freshGame();
   s.players[0].hand = [];
   s.players[1].hand = [];
   s.zone = [];
+  s.phase = 'play';
+  s.activePlayer = 0;
+  s.playsThisTurn = 0;
+  s.requiredPlays = 1;
+  s.players[1].forcedIons = 0;
+
+  // 给 B 两张离子（确保不会触发惩罚）
+  giveCard(s, 1, 'ion', 'Na');
+  giveCard(s, 1, 'ion', 'Na');
+
+  // A 打出催化剂
   const catUid = giveCard(s, 0, 'item', 'catalyst');
-  const aIon = giveCard(s, 0, 'ion', 'Na'); // 不反应
-  // B 无离子牌
-  Engine.playItem(s, 0, catUid, {});
-  Engine.playCatalystIon(s, 0, aIon);
-  // B 无离子，自动跳过并结算；Na 不反应 → 结束回合
-  eq(s.phase, 'play', '无反应，回合结束回到出牌阶段');
+  Engine.playCatalyst(s, 0, catUid);
+  Engine.confirmResponse(s, 0); // 无反应，轮到 B
+
+  // 现在是 B 的回合，requiredPlays 应为 2
   eq(s.activePlayer, 1, '轮到 B');
+  eq(s.requiredPlays, 2, 'B 的 requiredPlays=2');
+  eq(s.players[1].forcedIons, 0, 'forcedIons 已消耗');
+
+  // B 出第一张离子
+  const ion1 = s.players[1].hand.find(c => c.type === 'ion').uid;
+  const r1 = Engine.playIon(s, 1, ion1);
+  ok(r1.ok, 'B 出第一张离子');
+  eq(s.phase, 'play', '还需第二张，仍在 play 阶段');
+  eq(s.playsThisTurn, 1, 'playsThisTurn=1');
+
+  // B 出第二张离子
+  const ion2 = s.players[1].hand.find(c => c.type === 'ion').uid;
+  const r2 = Engine.playIon(s, 1, ion2);
+  ok(r2.ok, 'B 出第二张离子');
+  eq(s.phase, 'response', '两张出完，进入 response');
+}
+
+// ---------------------------------------------------------------------------
+section('惩罚阶段：无离子无催化剂 → 额外摸牌并转移道具');
+{
+  const s = freshGame();
+  // 清空 A 手牌，只给道具
+  s.players[0].hand = [];
+  s.players[1].hand = [];
+  const itemUid = giveCard(s, 0, 'item', 'stir');
+  giveCard(s, 0, 'item', 'filter');
+  const oppHandBefore = s.players[1].hand.length;
+  const deckBefore = s.deck.length;
+
+  // 触发惩罚（通过 startTurn 自动）
+  Engine.startTurn(s, 0, false);
+  eq(s.phase, 'response', '惩罚后直接进入 response');
+  // A 手里的道具都转给 B
+  ok(!s.players[0].hand.some(c => c.type === 'item'), 'A 手里无道具');
+  ok(s.players[1].hand.some(c => c.id === 'stir'), 'stir 转给 B');
+}
+
+// ---------------------------------------------------------------------------
+section('催化剂不可在被强制出牌时使用');
+{
+  const s = freshGame();
+  s.players[0].hand = [];
+  s.players[1].hand = [];
+  s.phase = 'play';
+  s.activePlayer = 1;
+  s.playsThisTurn = 0;
+  s.requiredPlays = 2; // 被催化剂标记
+  s.players[1].forcedIons = 0;
+
+  const catUid = giveCard(s, 1, 'item', 'catalyst');
+  const r = Engine.playCatalyst(s, 1, catUid);
+  ok(!r.ok, '被强制时不可用催化剂');
 }
 
 // ---------------------------------------------------------------------------
@@ -226,6 +326,8 @@ section('viewFor 隐藏对手手牌');
   ok(typeof v.players[1].handCount === 'number', '保留对手手牌数');
   ok(v.deck === undefined, '牌堆内容不可见');
   ok(typeof v.deckCount === 'number', '牌堆数量可见');
+  ok(typeof v.playsThisTurn === 'number', 'playsThisTurn 可见');
+  ok(typeof v.requiredPlays === 'number', 'requiredPlays 可见');
 }
 
 // ---------------------------------------------------------------------------

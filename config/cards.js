@@ -38,12 +38,13 @@ const ITEMS = {
   extract:   { name: '萃取',   count: 2, kind: 'defense', desc: '将反应区中指定的一个离子取回自己手牌，可用于任意类型反应' },
   neutralize:{ name: '中和',   count: 2, kind: 'defense', desc: '手动移走反应区中一个 H⁺ 或一个 OH⁻（仅限 H⁺/OH⁻ 参与的反应）' },
   stir:      { name: '搅拌',   count: 2, kind: 'neutral', desc: '清空整个反应区，所有离子移入弃牌堆' },
-  catalyst:  { name: '催化剂', count: 2, kind: 'attack',  desc: '仅可在本回合出完离子牌且无反应时打出。使用者先出一张离子牌，对手再出一张，统一判定' },
+  catalyst:  { name: '催化剂', count: 2, kind: 'attack',  desc: '当作离子牌打出（替代本回合的出牌）。不往反应区放任何东西，但使对手下一回合必须出两张离子牌（少于两张则尽力而为）。' },
 };
 
 // 初始与游戏设置
 const SETTINGS = {
   initialHandSize: 7,
+  drawPerTurn: 2,
   defaultPlayers: 2,
 };
 
