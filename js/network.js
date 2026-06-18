@@ -80,7 +80,8 @@
   async function subscribe(code, onUpdate) {
     if (!isConfigured()) throw new Error('联机不可用');
 
-    const url = API_BASE + '/api/events?code=' + encodeURIComponent(code);
+    const url = API_BASE + '/api/events?code=' + encodeURIComponent(code)
+      + '&clientId=' + encodeURIComponent(clientId());
     let es = new EventSource(url);
     let closed = false;
 
@@ -119,6 +120,12 @@
     await postJson('/api/action', { code, clientId: clientId(), action });
   }
 
+  // ---- 主动离开房间（通知服务器，让对手知道这是主动退出）----
+  async function leaveRoom(code) {
+    if (!isConfigured()) return;
+    try { await postJson('/api/leave', { code, clientId: clientId() }); } catch (_) {}
+  }
+
   // ---- 我的座位号（0=房主, 1=访客）----
   function mySeat(players) {
     const me = (players || []).find(p => p.id === clientId());
@@ -129,5 +136,6 @@
     isConfigured, clientId,
     createRoom, joinRoom, subscribe,
     pushState, pushAction, mySeat,
+    leaveRoom,
   };
 })(typeof window !== 'undefined' ? window : globalThis);

@@ -17,6 +17,7 @@
     selection: null,   // 当前选中手牌 { uid }
     pendingItem: null, // 待点选目标的道具 { itemId, uid }
     _gameStartNotified: false, // 先后手提示只显示一次
+    oppLeft: false,    // 对手是否已主动退出
   };
 
   // ---- 启动参数 ----
@@ -33,16 +34,24 @@
     el.classList.toggle('err', !!isErr);
     el.classList.add('show');
     clearTimeout(bannerTimer);
+    if (duration === 0) return; // persistent: 不自动消失
     bannerTimer = setTimeout(() => el.classList.remove('show'), duration || 2600);
   }
+  function clearBanner() {
+    clearTimeout(bannerTimer);
+    $('banner').classList.remove('show');
+  }
 
-  // ---- 先后手提示（全屏闪现）----
-  function showTurnNotice(isFirst) {
-    const el = $('turn-notice');
-    if (!el) return;
-    el.textContent = isFirst ? '⚔ 你是先手' : '🛡 你是后手';
-    el.className = 'turn-notice show';
-    setTimeout(() => { el.classList.remove('show'); }, 2200);
+  // ---- 先后手提示（开局闪现）----
+  function showStartNotice(isFirst) {
+    const mask = $('turn-notice');
+    const main = $('tn-main');
+    const sub  = $('tn-sub');
+    if (!mask || !main || !sub) return;
+    main.textContent = isFirst ? '先手' : '后手';
+    sub.textContent  = isFirst ? '你方先出牌' : '对手先出牌';
+    mask.classList.add('show');
+    setTimeout(() => mask.classList.remove('show'), 2200);
   }
 
   // ---- 视角 ----
@@ -116,10 +125,25 @@
 
     showWaiting(false);
 
+    // 检测对手连接状态
+    const myId = Network.clientId();
+    const oppPlayer = (room.players || []).find(p => p.id !== myId);
+    ctx.oppLeft = false;
+    if (oppPlayer && ctx.state) {
+      if (oppPlayer.left) {
+        ctx.oppLeft = true;
+        banner('对手已退出房间，可返回首页', false, 0);
+      } else if (!oppPlayer.connected) {
+        banner('对手已断线，等待重连…', false, 0);
+      } else {
+        clearBanner();
+      }
+    }
+
     // 游戏刚开始时显示先后手提示
     if (!ctx._gameStartNotified && ctx.state && ctx.state.started) {
       ctx._gameStartNotified = true;
-      showTurnNotice(ctx.seat === 0);
+      showStartNotice(ctx.seat === 0);
     }
 
     render();
@@ -156,7 +180,7 @@
     return res;
   }
 
-  // ---- 先后手提示动画 ----
+  // ---- 每回合提示动画 ----
   let _shownTurn = -1; // 已经显示过提示的 turn 序号（避免重复弹）
   function showTurnNotice(v) {
     if (!v || v.winner != null) return;
@@ -169,11 +193,10 @@
     const mask = $('turn-notice');
     const main = $('tn-main');
     const sub  = $('tn-sub');
-    if (!mask) return;
+    if (!mask || !main || !sub) return;
 
-    const isFirst = v.turn === 0 && ctx.seat === 0;
-    main.textContent = isFirst ? '先手' : '你的回合';
-    sub.textContent  = isFirst ? '你是先手方，先出牌！' : `第 ${Math.floor(v.turn / 2) + 1} 回合`;
+    main.textContent = '你的回合';
+    sub.textContent  = `第 ${Math.floor(v.turn / 2) + 1} 回合`;
     mask.classList.add('show');
     setTimeout(() => mask.classList.remove('show'), 1600);
   }
@@ -332,12 +355,16 @@
       if (v.phase === 'over') return '游戏结束';
       return '';
     })();
-    $('phase-label').textContent = canActNow(ctx.state) ? phaseLabel : '等待对手操作…';
+    if (ctx.oppLeft) {
+      $('phase-label').textContent = '对手已退出';
+    } else {
+      $('phase-label').textContent = canActNow(ctx.state) ? phaseLabel : '等待对手操作…';
+    }
 
     const hand = $('hand');
     hand.innerHTML = '';
     const mine = me.hand || [];
-    const actionable = canActNow(ctx.state) && v.winner == null;
+    const actionable = canActNow(ctx.state) && v.winner == null && !ctx.oppLeft;
 
     mine.forEach(c => {
       const el = makeCardEl(c, false);
@@ -369,6 +396,10 @@
   function renderActions(v) {
     const bar = $('hand-actions');
     bar.innerHTML = '';
+    if (ctx.oppLeft) {
+      bar.appendChild(mkBtn('返回首页', 'btn', async () => { await cleanup(true); location.href = 'index.html'; }));
+      return;
+    }
     if (!canActNow(ctx.state) || v.winner != null) return;
 
     if (v.phase === 'response') {
@@ -447,6 +478,8 @@
   $('btn-again').addEventListener('click', () => {
     $('over-mask').classList.remove('show');
     ctx._gameStartNotified = false;
+    _shownTurn = -1;
+    _prevHandUids = new Set();
     if (ctx.role === 'host') {
       const names = ctx.state ? ctx.state.players.map(p => p.name) : ['玩家1', '玩家2'];
       ctx.state = Engine.createGame({ playerNames: names });
@@ -455,16 +488,20 @@
       banner('等待房主开始新一局…');
     }
   });
-  $('btn-home').addEventListener('click', () => { cleanup(); location.href = 'index.html'; });
-  $('btn-quit').addEventListener('click', () => {
-    if (confirm('确定退出当前对局？')) { cleanup(); location.href = 'index.html'; }
+  $('btn-home').addEventListener('click', async () => { await cleanup(true); location.href = 'index.html'; });
+  $('btn-quit').addEventListener('click', async () => {
+    if (confirm('确定退出当前对局？')) { await cleanup(true); location.href = 'index.html'; }
   });
 
-  function cleanup() {
+  async function cleanup(intentional) {
+    if (intentional && ctx.roomCode) {
+      try { await Network.leaveRoom(ctx.roomCode); } catch (_) {}
+    }
     if (ctx.sub) { try { ctx.sub.close(); } catch (_) {} }
     sessionStorage.removeItem('nr_launch');
   }
-  window.addEventListener('beforeunload', cleanup);
+  // beforeunload 时不调 leaveRoom（异步可能来不及），靠 SSE close 让服务器感知断线
+  window.addEventListener('beforeunload', () => cleanup(false));
 
   boot();
 })();

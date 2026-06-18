@@ -49,12 +49,22 @@ function randomCode() {
 }
 
 function snapshot(room) {
+  const connectedClients = new Set();
+  for (const res of room.subs) {
+    if (res._nr_clientId) connectedClients.add(res._nr_clientId);
+  }
   return {
     id: room.code, // 兼容旧接口字段（原 LeanCloud 对象 id）
     code: room.code,
     state: room.state,
     action: room.action,
-    players: room.players || [],
+    players: (room.players || []).map(p => ({
+      id: p.id,
+      nick: p.nick,
+      seat: p.seat,
+      connected: connectedClients.has(p.id),
+      left: p.left || false,
+    })),
   };
 }
 
@@ -130,28 +140,35 @@ async function handleApi(req, res, url) {
       code,
       state: null,
       action: null,
-      players: [{ id: clientId, nick: nick || '房主', seat: 0 }],
+      players: [{ id: clientId, nick: nick || '房主', seat: 0, left: false }],
       subs: new Set(),
       lastActive: Date.now(),
     });
     return sendJson(res, 200, { code });
   }
 
-  // ---- 加入房间（访客）----
+  // ---- 加入房间（访客 / 重连）----
   if (route === '/api/join' && req.method === 'POST') {
     const { code, clientId, nick } = await readJson(req);
+    if (!clientId) return sendJson(res, 400, { error: '缺少 clientId' });
     const room = rooms.get((code || '').toUpperCase());
     if (!room) return sendJson(res, 404, { error: '房间不存在' });
     const players = room.players;
-    const already = players.some(p => p.id === clientId);
-    if (players.length >= 2 && !already) {
+    const existing = players.find(p => p.id === clientId);
+    if (existing) {
+      // 重连：恢复在线标记，保留原有 seat
+      existing.left = false;
+      existing.nick = nick || existing.nick; // 允许改名
+      broadcast(room);
+      return sendJson(res, 200, { code: room.code, seat: existing.seat, reconnect: true });
+    }
+    // 新人加入：房间满 2 人则拒绝
+    if (players.length >= 2) {
       return sendJson(res, 409, { error: '房间已满' });
     }
-    if (!already) {
-      players.push({ id: clientId, nick: nick || '访客', seat: 1 });
-      broadcast(room); // 通知房主：有人加入了
-    }
-    return sendJson(res, 200, { code: room.code });
+    players.push({ id: clientId, nick: nick || '访客', seat: players.length, left: false });
+    broadcast(room);
+    return sendJson(res, 200, { code: room.code, seat: players[players.length - 1].seat });
   }
 
   // ---- 房主写回完整状态（顺带清空已处理动作）----
@@ -187,6 +204,10 @@ async function handleApi(req, res, url) {
     const room = rooms.get((url.searchParams.get('code') || '').toUpperCase());
     if (!room) return sendJson(res, 404, { error: '房间不存在' });
 
+    const clientId = url.searchParams.get('clientId') || '';
+    // 标记该连接对应的玩家
+    res._nr_clientId = clientId;
+
     res.writeHead(200, {
       'Content-Type': 'text/event-stream; charset=utf-8',
       'Cache-Control': 'no-cache',
@@ -197,8 +218,8 @@ async function handleApi(req, res, url) {
     room.subs.add(res);
     room.lastActive = Date.now();
 
-    // 立即下发一次当前快照
-    res.write('data: ' + JSON.stringify(snapshot(room)) + '\n\n');
+    // 立即下发一次当前快照（此时已包含连接状态）
+    broadcast(room);
 
     // 心跳，穿越 frp / 代理时保活
     const beat = setInterval(() => {
@@ -209,8 +230,21 @@ async function handleApi(req, res, url) {
       clearInterval(beat);
       room.subs.delete(res);
       room.lastActive = Date.now();
+      // 通知另一方：有人断线了
+      broadcast(room);
     });
     return;
+  }
+
+  // ---- 主动离开房间 ----
+  if (route === '/api/leave' && req.method === 'POST') {
+    const { code, clientId } = await readJson(req);
+    const room = rooms.get((code || '').toUpperCase());
+    if (!room) return sendJson(res, 404, { error: '房间不存在' });
+    const player = (room.players || []).find(p => p.id === clientId);
+    if (player) player.left = true;
+    broadcast(room);
+    return sendJson(res, 200, { ok: true });
   }
 
   sendJson(res, 404, { error: '未知接口' });
