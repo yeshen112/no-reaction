@@ -181,14 +181,15 @@
   }
 
   // ---- 每回合提示动画 ----
-  let _shownTurn = -1; // 已经显示过提示的 turn 序号（避免重复弹）
+  let _prevActivePlayer = -1;
+  let _myTurnCount = 0;
   function showTurnNotice(v) {
     if (!v || v.winner != null) return;
-    // 只在我的回合开始时弹提示，且每个 turn 只弹一次
-    if (v.turn === _shownTurn) return;
-    if (v.activePlayer !== ctx.seat) return;
-    if (v.playsThisTurn !== 0) return; // 已经出过牌了，不重复弹
-    _shownTurn = v.turn;
+    if (v.activePlayer !== ctx.seat) { _prevActivePlayer = v.activePlayer; return; }
+    if (v.playsThisTurn !== 0) { _prevActivePlayer = v.activePlayer; return; }
+    if (_prevActivePlayer === ctx.seat) return;
+    _prevActivePlayer = ctx.seat;
+    _myTurnCount++;
 
     const mask = $('turn-notice');
     const main = $('tn-main');
@@ -196,7 +197,7 @@
     if (!mask || !main || !sub) return;
 
     main.textContent = '你的回合';
-    sub.textContent  = `第 ${Math.floor(v.turn / 2) + 1} 回合`;
+    sub.textContent  = `第 ${_myTurnCount} 回合`;
     mask.classList.add('show');
     setTimeout(() => mask.classList.remove('show'), 1600);
   }
