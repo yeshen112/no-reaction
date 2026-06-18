@@ -1,8 +1,5 @@
 /**
- * 游戏页控制器 —— 把引擎状态渲染到 DOM，处理本地热座与联机两种模式。
- *
- * 本地模式：单端持有 state，直接运行引擎，渲染当前 activePlayer 的视角。
- * 联机模式：房主权威运行引擎并 pushState；访客提交 action 意图由房主结算。
+ * 游戏页控制器 —— 联机模式（房主权威 + 访客提交意图）。
  */
 (function () {
   'use strict';
@@ -12,14 +9,14 @@
 
   // ---- 运行时上下文 ----
   const ctx = {
-    mode: 'local',     // 'local' | 'online'
     role: null,        // 'host' | 'guest'
     roomCode: null,
-    seat: 0,           // 联机：我的座位；本地：忽略
-    sub: null,         // 联机订阅句柄
-    state: null,       // 完整 state（本地/房主）；访客侧为收到的快照
-    selection: null,   // 当前选中的手牌 { uid, itemId }
-    pendingItem: null, // 需要点选目标的道具 { itemId, uid, need }
+    seat: 0,           // 我的座位（0=房主, 1=访客）
+    sub: null,         // SSE 订阅句柄
+    state: null,       // 完整 state（房主）或收到的快照（访客）
+    selection: null,   // 当前选中手牌 { uid }
+    pendingItem: null, // 待点选目标的道具 { itemId, uid }
+    _gameStartNotified: false, // 先后手提示只显示一次
   };
 
   // ---- 启动参数 ----
@@ -30,27 +27,35 @@
 
   // ---- 提示横幅 ----
   let bannerTimer = null;
-  function banner(msg, isErr) {
+  function banner(msg, isErr, duration) {
     const el = $('banner');
     el.textContent = msg;
     el.classList.toggle('err', !!isErr);
     el.classList.add('show');
     clearTimeout(bannerTimer);
-    bannerTimer = setTimeout(() => el.classList.remove('show'), 2600);
+    bannerTimer = setTimeout(() => el.classList.remove('show'), duration || 2600);
   }
 
-  // ---- 视角：渲染「我」的座位（ctx.seat）----
+  // ---- 先后手提示（全屏闪现）----
+  function showTurnNotice(isFirst) {
+    const el = $('turn-notice');
+    if (!el) return;
+    el.textContent = isFirst ? '⚔ 你是先手' : '🛡 你是后手';
+    el.className = 'turn-notice show';
+    setTimeout(() => { el.classList.remove('show'); }, 2200);
+  }
+
+  // ---- 视角 ----
   function myView() {
     if (!ctx.state) return null;
     return Engine.viewFor(ctx.state, ctx.seat);
   }
 
-  // 我是否可以现在操作（必须是我的回合）
   function canActNow(s) {
     return s.activePlayer === ctx.seat;
   }
 
-  // ---- 启动（仅联机模式）----
+  // ---- 启动 ----
   function boot() {
     ctx.role = launch.role;
     ctx.roomCode = launch.roomCode;
@@ -61,7 +66,6 @@
     bootOnline();
   }
 
-  // ---- 联机启动 ----
   async function bootOnline() {
     showWaiting(true);
     try {
@@ -75,10 +79,10 @@
     const mask = $('waiting-mask');
     mask.classList.toggle('show', !!on);
     if (title) $('waiting-title').textContent = title;
-    if (sub) $('waiting-sub').textContent = sub;
+    if (sub)   $('waiting-sub').textContent = sub;
   }
 
-  // 房间快照更新（联机）
+  // ---- 房间快照更新 ----
   let _lastSeq = 0;
   async function onRoomUpdate(room) {
     ctx.seat = Network.mySeat(room.players);
@@ -87,14 +91,12 @@
     const bothJoined = (room.players || []).length >= 2;
 
     if (ctx.role === 'host') {
-      // 房主权威：双方就绪后若尚无 state 则开局
       if (bothJoined && !room.state) {
         const names = orderedNames(room.players);
         ctx.state = Engine.createGame({ playerNames: names });
         await Network.pushState(ctx.roomCode, ctx.state);
-        return; // pushState 会再次触发 onRoomUpdate
+        return;
       }
-      // 处理访客提交的动作
       if (room.action && room.action.by && room.action.seq !== _lastSeq) {
         const actorSeat = (room.players.find(p => p.id === room.action.by) || {}).seat;
         if (actorSeat === 1 && ctx.state) {
@@ -106,13 +108,20 @@
       }
       if (room.state) ctx.state = room.state;
     } else {
-      // 访客：直接采用房主下发的 state
       if (room.state) ctx.state = room.state;
     }
 
     if (!bothJoined) { showWaiting(true); return; }
-    if (!ctx.state) { showWaiting(true, '等待房主开局…', '对手已加入，正在初始化。'); return; }
+    if (!ctx.state)  { showWaiting(true, '等待房主开局…', '对手已加入，正在初始化。'); return; }
+
     showWaiting(false);
+
+    // 游戏刚开始时显示先后手提示
+    if (!ctx._gameStartNotified && ctx.state && ctx.state.started) {
+      ctx._gameStartNotified = true;
+      showTurnNotice(ctx.seat === 0);
+    }
+
     render();
   }
 
@@ -121,77 +130,81 @@
     return byseat.map(p => p.nick || ('玩家' + (p.seat + 1)));
   }
 
-  // ---- 动作分发：把意图作用到 state（本地直接调用，房主代访客调用）----
+  // ---- 动作分发 ----
   function applyAction(state, seat, action) {
     const p = action.payload || {};
-    let res;
     switch (action.type) {
-      case 'playIon':         res = Engine.playIon(state, seat, p.uid); break;
-      case 'playCatalyst':    res = Engine.playCatalyst(state, seat, p.uid); break;
-      case 'playItem':        res = Engine.playItem(state, seat, p.uid, p.params || {}); break;
-      case 'confirmResponse': res = Engine.confirmResponse(state, seat); break;
-      default: res = { ok: false, msg: '未知动作' };
+      case 'playIon':         return Engine.playIon(state, seat, p.uid);
+      case 'playCatalyst':    return Engine.playCatalyst(state, seat, p.uid);
+      case 'playItem':        return Engine.playItem(state, seat, p.uid, p.params || {});
+      case 'confirmResponse': return Engine.confirmResponse(state, seat);
+      default: return { ok: false, msg: '未知动作' };
     }
-    return res;
   }
 
-  // ---- 本地/房主执行动作，访客提交意图 ----
   async function doAction(type, payload) {
-    if (ctx.mode === 'online' && ctx.role === 'guest') {
+    if (ctx.role === 'guest') {
       try { await Network.pushAction(ctx.roomCode, { type, payload }); }
       catch (e) { banner('提交失败：' + (e && e.message || e), true); }
       return { ok: true };
     }
-    const seat = (ctx.mode === 'online') ? ctx.seat : activeSeat(ctx.state);
-    const res = applyAction(ctx.state, seat, { type, payload });
+    // 房主：直接结算，然后推送
+    const res = applyAction(ctx.state, ctx.seat, { type, payload });
     if (!res.ok) { banner(res.msg || '操作无效', true); }
-    if (ctx.mode === 'online' && ctx.role === 'host') {
-      await Network.pushState(ctx.roomCode, ctx.state);
-    }
+    await Network.pushState(ctx.roomCode, ctx.state);
     render(res);
     return res;
   }
 
+  // ---- 先后手提示动画 ----
+  let _shownTurn = -1; // 已经显示过提示的 turn 序号（避免重复弹）
+  function showTurnNotice(v) {
+    if (!v || v.winner != null) return;
+    // 只在我的回合开始时弹提示，且每个 turn 只弹一次
+    if (v.turn === _shownTurn) return;
+    if (v.activePlayer !== ctx.seat) return;
+    if (v.playsThisTurn !== 0) return; // 已经出过牌了，不重复弹
+    _shownTurn = v.turn;
+
+    const mask = $('turn-notice');
+    const main = $('tn-main');
+    const sub  = $('tn-sub');
+    if (!mask) return;
+
+    const isFirst = v.turn === 0 && ctx.seat === 0;
+    main.textContent = isFirst ? '先手' : '你的回合';
+    sub.textContent  = isFirst ? '你是先手方，先出牌！' : `第 ${Math.floor(v.turn / 2) + 1} 回合`;
+    mask.classList.add('show');
+    setTimeout(() => mask.classList.remove('show'), 1600);
+  }
+
   // ---- 摸牌动画 ----
-  // 上次渲染时的手牌 uid 集合，用于识别新牌
   let _prevHandUids = new Set();
 
   function animateDraw(newUids) {
-    // 找到牌堆 DOM 位置作为动画起点
     const deckEl = $('deck-stack');
     const handEl = $('hand');
     if (!deckEl || !handEl || newUids.length === 0) return;
-
     const deckRect = deckEl.getBoundingClientRect();
-    const handRect = handEl.getBoundingClientRect();
-
     newUids.forEach((uid, i) => {
-      // 找到对应手牌元素（刚被 renderHand 插入）
       const cardEl = handEl.querySelector(`[data-uid="${uid}"]`);
       if (!cardEl) return;
-
       const cardRect = cardEl.getBoundingClientRect();
       const dx = deckRect.left + deckRect.width / 2 - (cardRect.left + cardRect.width / 2);
-      const dy = deckRect.top + deckRect.height / 2 - (cardRect.top + cardRect.height / 2);
-
-      // 从牌堆位置飞入
+      const dy = deckRect.top  + deckRect.height / 2 - (cardRect.top  + cardRect.height / 2);
       cardEl.style.transition = 'none';
       cardEl.style.transform = `translate(${dx}px, ${dy}px) scale(.7)`;
       cardEl.style.opacity = '0';
-
-      requestAnimationFrame(() => {
-        requestAnimationFrame(() => {
-          cardEl.style.transition = `transform .35s cubic-bezier(.22,.7,.3,1.1) ${i * 70}ms,
-                                     opacity .25s ease ${i * 70}ms`;
-          cardEl.style.transform = '';
-          cardEl.style.opacity = '';
-          // 落位后短暂高亮
-          setTimeout(() => {
-            cardEl.classList.add('just-drawn');
-            setTimeout(() => cardEl.classList.remove('just-drawn'), 600);
-          }, 360 + i * 70);
-        });
-      });
+      requestAnimationFrame(() => requestAnimationFrame(() => {
+        cardEl.style.transition = `transform .35s cubic-bezier(.22,.7,.3,1.1) ${i * 70}ms,
+                                   opacity .25s ease ${i * 70}ms`;
+        cardEl.style.transform = '';
+        cardEl.style.opacity = '';
+        setTimeout(() => {
+          cardEl.classList.add('just-drawn');
+          setTimeout(() => cardEl.classList.remove('just-drawn'), 600);
+        }, 360 + i * 70);
+      }));
     });
   }
 
@@ -200,13 +213,12 @@
     const v = myView();
     if (!v) return;
 
-    // 顶栏：当前回合
-    $('turn-name').textContent = v.players[v.activePlayer] ? v.players[v.activePlayer].name : '——';
+    $('turn-name').textContent = v.players[v.activePlayer]
+      ? v.players[v.activePlayer].name : '——';
 
     renderOpponent(v);
-    renderZone(v, lastRes);
+    renderZone(v);
 
-    // 找出本次渲染中新出现的手牌 uid（用于摸牌动画）
     const me = v.players[v.you];
     const currentUids = (me.hand || []).filter(c => !c.hidden).map(c => c.uid);
     const newUids = currentUids.filter(uid => !_prevHandUids.has(uid));
@@ -214,12 +226,11 @@
 
     renderHand(v);
     if (newUids.length > 0) animateDraw(newUids);
-
     renderDeck(v);
     renderActions(v);
     renderLog(v);
+    showTurnNotice(v);
 
-    // 结束
     if (v.winner != null) showOver(v);
   }
 
@@ -228,16 +239,16 @@
     const stackEl = $('deck-stack');
     if (!countEl || !stackEl) return;
     countEl.textContent = (v.deckCount || 0) + ' 张';
-    // 牌堆空时降低不透明度
     stackEl.style.opacity = (v.deckCount || 0) > 0 ? '1' : '0.3';
   }
 
-  // 对手区（相对当前视角）
+  // 对手区
   function renderOpponent(v) {
     const oppSeat = (v.you + 1) % v.players.length;
     const opp = v.players[oppSeat];
     $('opp-name').textContent = opp.name;
-    $('opp-count').textContent = opp.handCount != null ? opp.handCount : (opp.hand ? opp.hand.length : 0);
+    $('opp-count').textContent = opp.handCount != null
+      ? opp.handCount : (opp.hand ? opp.hand.length : 0);
     $('opp-pill').classList.toggle('active', v.activePlayer === oppSeat);
     const wrap = $('opp-hand');
     wrap.innerHTML = '';
@@ -250,7 +261,7 @@
   }
 
   // 反应区
-  function renderZone(v, lastRes) {
+  function renderZone(v) {
     const zone = $('zone');
     zone.innerHTML = '';
     const reacts = Engine.findReactions(v.zone);
@@ -265,8 +276,7 @@
       zone.appendChild(hint);
     } else {
       v.zone.forEach(c => {
-        const el = cardEl(c, inReaction.has(c.uid));
-        // 若正在等待选择道具目标，反应区的牌可点选
+        const el = makeCardEl(c, inReaction.has(c.uid));
         if (ctx.pendingItem && canActNow(ctx.state)) {
           el.classList.add('zone-target');
           el.addEventListener('click', () => onZoneTargetClick(c));
@@ -275,7 +285,6 @@
       });
     }
 
-    // 反应信息
     const info = $('zone-info');
     if (reacts.length > 0) {
       const r = reacts[0];
@@ -287,8 +296,8 @@
     }
   }
 
-  // 单张卡片元素
-  function cardEl(card, highlight) {
+  // 卡牌 DOM 元素
+  function makeCardEl(card, highlight) {
     const el = document.createElement('div');
     el.className = 'card';
     if (card.type === 'ion') {
@@ -312,13 +321,11 @@
   // 手牌
   function renderHand(v) {
     const me = v.players[v.you];
-    $('me-name').textContent = me.name + (ctx.mode === 'local' ? '（请操作）' : '（你）');
+    $('me-name').textContent = me.name + '（你）';
     const phaseLabel = (() => {
       if (v.phase === 'play') {
         const required = v.requiredPlays || 1;
-        if (required > 1) {
-          return `催化剂效果：出第 ${(v.playsThisTurn || 0) + 1} / ${required} 张离子牌`;
-        }
+        if (required > 1) return `催化剂效果：出第 ${(v.playsThisTurn || 0) + 1} / ${required} 张离子牌`;
         return '出牌阶段：打出一张离子牌（或催化剂）';
       }
       if (v.phase === 'response') return '道具阶段：可使用道具，完成后点「确认结束」';
@@ -333,7 +340,7 @@
     const actionable = canActNow(ctx.state) && v.winner == null;
 
     mine.forEach(c => {
-      const el = cardEl(c, false);
+      const el = makeCardEl(c, false);
       el.dataset.uid = c.uid;
       if (actionable && isPlayable(v, c)) {
         el.classList.add('selectable');
@@ -344,16 +351,13 @@
     });
   }
 
-  // 某张手牌当前是否可打出
   function isPlayable(v, c) {
     if (v.phase === 'play') {
       if (c.type === 'ion') return true;
-      // 催化剂可在正常出牌轮（requiredPlays=1）当作离子打出
       if (c.id === 'catalyst') return (v.requiredPlays || 1) === 1;
       return false;
     }
     if (v.phase === 'response') {
-      // 防守/中性道具可用，催化剂和离子不可用
       if (c.type !== 'item') return false;
       const def = ITEMS[c.id];
       return def && (def.kind === 'defense' || def.kind === 'neutral');
@@ -361,25 +365,23 @@
     return false;
   }
 
-  // 操作按钮区（确认结束道具阶段、取消选择等）
+  // 操作按钮
   function renderActions(v) {
     const bar = $('hand-actions');
     bar.innerHTML = '';
     if (!canActNow(ctx.state) || v.winner != null) return;
 
     if (v.phase === 'response') {
-      bar.appendChild(mkBtn('确认结束道具阶段', 'btn', () => {
-        doAction('confirmResponse', {});
-      }));
+      bar.appendChild(mkBtn('确认结束道具阶段', 'btn', () => doAction('confirmResponse', {})));
     }
     if (ctx.pendingItem) {
       bar.appendChild(mkBtn('取消选择', 'btn-mini', () => {
         ctx.pendingItem = null; ctx.selection = null; render();
       }));
       const hintMap = {
-        extract: '点击反应区中要取回手牌的离子',
-        heat: '点击反应区中要移走的气体离子',
-        neutralize: '点击反应区中要移走的 H⁺ 或 OH⁻',
+        extract:   '点击反应区中要取回手牌的离子',
+        heat:      '点击反应区中要移走的气体离子',
+        neutralize:'点击反应区中要移走的 H⁺ 或 OH⁻',
       };
       banner(hintMap[ctx.pendingItem.itemId] || '请在反应区选择目标');
     }
@@ -387,8 +389,7 @@
 
   function mkBtn(label, cls, fn) {
     const b = document.createElement('button');
-    b.className = cls;
-    b.textContent = label;
+    b.className = cls; b.textContent = label;
     b.addEventListener('click', fn);
     return b;
   }
@@ -399,81 +400,57 @@
     box.innerHTML = '';
     (v.log || []).slice(-60).forEach(line => {
       const e = document.createElement('div');
-      e.className = 'entry';
-      e.textContent = line;
+      e.className = 'entry'; e.textContent = line;
       box.appendChild(e);
     });
     box.scrollTop = box.scrollHeight;
   }
 
-  // ---- 交互：点击手牌 ----
+  // ---- 交互 ----
   function onHandClick(v, card) {
     if (card.type === 'ion') {
       if (v.phase === 'play') return doAction('playIon', { uid: card.uid });
       return;
     }
-    // 道具
     if (card.id === 'catalyst') {
       if (v.phase === 'play') return doAction('playCatalyst', { uid: card.uid });
       return;
     }
-    // 需要点选目标的道具（response 阶段）
     if (['extract', 'heat', 'neutralize'].includes(card.id)) {
       ctx.pendingItem = { itemId: card.id, uid: card.uid };
       ctx.selection = { uid: card.uid };
-      render();
-      return;
+      render(); return;
     }
-    // 过滤：默认处理第一对沉淀
-    if (card.id === 'filter') {
-      return doAction('playItem', { uid: card.uid, params: {} });
-    }
-    // 搅拌：直接生效
-    if (card.id === 'stir') {
-      return doAction('playItem', { uid: card.uid, params: {} });
-    }
+    if (card.id === 'filter') return doAction('playItem', { uid: card.uid, params: {} });
+    if (card.id === 'stir')   return doAction('playItem', { uid: card.uid, params: {} });
   }
 
-  // ---- 交互：点击反应区目标（用于 extract/heat/neutralize）----
   function onZoneTargetClick(card) {
     if (!ctx.pendingItem) return;
-    const { itemId, uid } = ctx.pendingItem;
-    ctx.pendingItem = null;
-    ctx.selection = null;
+    const { uid } = ctx.pendingItem;
+    ctx.pendingItem = null; ctx.selection = null;
     doAction('playItem', { uid, params: { uid: card.uid } });
   }
 
   // ---- 结束模态 ----
   function showOver(v) {
-    const mask = $('over-mask');
-    const iWon = (ctx.mode === 'local')
-      ? false // 本地热座无「我」，统一展示胜负双方
-      : (v.winner === ctx.seat);
-    const title = $('over-title');
-    const sub = $('over-sub');
-    if (ctx.mode === 'local') {
-      title.textContent = '🏆 ' + v.players[v.winner].name + ' 获胜！';
-      title.className = 'win';
-      sub.textContent = v.players[v.loser].name + ' 触发了无法解除的反应。';
-    } else {
-      title.textContent = iWon ? '🏆 你赢了！' : '💧 你输了';
-      title.className = iWon ? 'win' : 'lose';
-      sub.textContent = iWon ? '对手触发了无法解除的反应。' : '你触发了无法解除的反应。';
-    }
-    mask.classList.add('show');
+    const iWon = v.winner === ctx.seat;
+    $('over-title').textContent = iWon ? '🏆 你赢了！' : '💧 你输了';
+    $('over-title').className = iWon ? 'win' : 'lose';
+    $('over-sub').textContent = iWon
+      ? '对手触发了无法解除的反应。'
+      : '你触发了无法解除的反应。';
+    $('over-mask').classList.add('show');
   }
 
-  // ---- 模态与顶栏按钮 ----
+  // ---- 按钮事件 ----
   $('btn-again').addEventListener('click', () => {
     $('over-mask').classList.remove('show');
-    if (ctx.mode === 'local') {
-      ctx.state = Engine.createGame({ playerNames: launch.playerNames || ['玩家1', '玩家2'] });
-      ctx.selection = null; ctx.pendingItem = null;
-      render();
-    } else if (ctx.role === 'host') {
+    ctx._gameStartNotified = false;
+    if (ctx.role === 'host') {
       const names = ctx.state ? ctx.state.players.map(p => p.name) : ['玩家1', '玩家2'];
       ctx.state = Engine.createGame({ playerNames: names });
-      Network.pushState(ctx.roomCode, ctx.state).then(render);
+      Network.pushState(ctx.roomCode, ctx.state).then(() => render());
     } else {
       banner('等待房主开始新一局…');
     }
