@@ -66,6 +66,9 @@
   function handHasCatalyst(state, idx) {
     return state.players[idx].hand.some(c => c.type === 'item' && c.id === 'catalyst');
   }
+  function handHasAttackItem(state, idx) {
+    return state.players[idx].hand.some(c => c.type === 'item' && ITEMS[c.id] && ITEMS[c.id].kind === 'attack');
+  }
 
   function log(state, msg) { state.log.push(msg); if (state.log.length > 200) state.log.shift(); }
 
@@ -145,6 +148,7 @@
       playsThisTurn: 0, requiredPlays: 1,
       winner: null, loser: null,
       log: [], started: true,
+      pendingDisplace: null,
     };
     // 发初始手牌
     for (let i = 0; i < SETTINGS.initialHandSize; i++) {
@@ -155,8 +159,8 @@
     return state;
   }
 
-  // 从牌堆顶摸一张给指定玩家；牌堆空则洗入弃牌。
-  function drawCard(state, idx) {
+  // 从牌堆顶摸一张，不指定归属（底层）。
+  function drawOne(state) {
     if (state.deck.length === 0) {
       if (state.discard.length === 0) return null;
       const rng = mulberry32((state.seed + state.discard.length) | 0);
@@ -164,7 +168,12 @@
       state.discard = [];
       log(state, '牌堆耗尽，弃牌堆重新洗入牌堆。');
     }
-    const c = state.deck.shift();
+    return state.deck.shift() || null;
+  }
+
+  // 从牌堆顶摸一张给指定玩家。
+  function drawCard(state, idx) {
+    const c = drawOne(state);
     if (c) state.players[idx].hand.push(c);
     return c;
   }
@@ -186,10 +195,12 @@
       return { ok: true };
     }
 
-    // 惩罚检查在摸牌前：若手里已无离子且无催化剂，触发惩罚
-    if (!handHasIon(state, idx) && !handHasCatalyst(state, idx)) {
-      applyPenalty(state, idx);
-      return { ok: true };
+    // 惩罚检查在摸牌前：无离子时，只有非强制出牌且有攻击道具才能免罚
+    if (!handHasIon(state, idx)) {
+      if (state.requiredPlays > 1 || !handHasAttackItem(state, idx)) {
+        applyPenalty(state, idx);
+        return { ok: true };
+      }
     }
 
     // 正常摸牌
@@ -207,19 +218,22 @@
     return { ok: true };
   }
 
-  // 惩罚阶段：额外摸2张，把手里所有道具转给对手。
+  // 惩罚阶段：额外摸2张，离子归自己，道具直接给对手。
   function applyPenalty(state, idx) {
     const opp = opponentOf(state, idx);
-    // 额外摸 2 张
-    let drawn = 0;
+    let drawn = 0, itemsGiven = 0;
     for (let i = 0; i < 2; i++) {
-      if (drawCard(state, idx)) drawn++;
+      const c = drawOne(state);
+      if (!c) continue;
+      drawn++;
+      if (c.type === 'item') {
+        state.players[opp].hand.push(c);
+        itemsGiven++;
+      } else {
+        state.players[idx].hand.push(c);
+      }
     }
-    // 把所有道具移给对手
-    const items = state.players[idx].hand.filter(c => c.type === 'item');
-    state.players[idx].hand = state.players[idx].hand.filter(c => c.type !== 'item');
-    state.players[opp].hand.push(...items);
-    log(state, `${state.players[idx].name} 没有离子牌，触发惩罚：额外摸 ${drawn} 张，${items.length} 张道具转给 ${state.players[opp].name}。`);
+    log(state, `${state.players[idx].name} 没有离子牌，触发惩罚：额外摸 ${drawn} 张，${itemsGiven} 张道具转给 ${state.players[opp].name}。`);
     state.phase = 'response';
   }
 
@@ -271,6 +285,84 @@
     const opp = opponentOf(state, idx);
     state.players[opp].forcedIons = 2;
     log(state, `${state.players[idx].name} 打出催化剂！${state.players[opp].name} 下回合须出 2 张离子牌。`);
+    state.phase = 'response';
+    return { ok: true };
+  }
+
+  // ---- 出牌：攻击道具（play 阶段，替代离子）----
+  function playAttackItem(state, idx, uid) {
+    if (state.winner != null) return { ok: false, msg: '游戏已结束。' };
+    if (state.phase !== 'play') return { ok: false, msg: '当前不是出牌阶段。' };
+    if (state.activePlayer !== idx) return { ok: false, msg: '还没轮到你。' };
+    if (state.requiredPlays > 1) return { ok: false, msg: '受催化剂效果影响时，只能出离子牌。' };
+    const hand = state.players[idx].hand;
+    const ci = hand.findIndex(c => c.uid === uid);
+    if (ci < 0) return { ok: false, msg: '手牌中没有这张牌。' };
+    if (hand[ci].type !== 'item') return { ok: false, msg: '这不是道具牌。' };
+    const itemId = hand[ci].id;
+    const def = ITEMS[itemId];
+    if (!def || def.kind !== 'attack' || itemId === 'catalyst')
+      return { ok: false, msg: '这不是攻击道具牌。' };
+
+    const card = hand.splice(ci, 1)[0];
+    state.discard.push(card);
+
+    if (itemId === 'volatilize') return applyVolatilize(state, idx);
+    if (itemId === 'displace')   return applyDisplace(state, idx);
+    return { ok: false, msg: '未知道具。' };
+  }
+
+  function applyVolatilize(state, idx) {
+    const opp = opponentOf(state, idx);
+    const hand = state.players[opp].hand;
+    const discardCount = Math.min(2, hand.length);
+    if (discardCount === 0) {
+      log(state, `${state.players[idx].name} 打出「挥发」，但 ${state.players[opp].name} 没有手牌可弃。`);
+      state.phase = 'response';
+      return { ok: true };
+    }
+    // 随机选取 discardCount 张弃置
+    const indices = hand.map((_, i) => i);
+    for (let i = indices.length - 1; i >= indices.length - discardCount; i--) {
+      const j = Math.floor(Math.random() * (i + 1));
+      [indices[i], indices[j]] = [indices[j], indices[i]];
+    }
+    const toDiscard = indices.slice(-discardCount).sort((a, b) => b - a);
+    const discarded = [];
+    for (const i of toDiscard) discarded.push(...hand.splice(i, 1));
+    state.discard.push(...discarded);
+    log(state, `${state.players[idx].name} 打出「挥发」！${state.players[opp].name} 随机弃置 ${discarded.length} 张手牌。`);
+    state.phase = 'response';
+    return { ok: true };
+  }
+
+  function applyDisplace(state, idx) {
+    const opp = opponentOf(state, idx);
+    // 惩罚阶段已处理掉对手道具的可能，此处对手可能有也可能没有
+    const oppItems = state.players[opp].hand.filter(c => c.type === 'item');
+    if (oppItems.length === 0) {
+      log(state, `${state.players[idx].name} 打出「置换」，但 ${state.players[opp].name} 没有道具牌，无效果。`);
+      state.phase = 'response';
+      return { ok: true };
+    }
+    state.pendingDisplace = opp;
+    log(state, `${state.players[idx].name} 打出「置换」！${state.players[opp].name} 须选择一张道具牌交给 ${state.players[idx].name}。`);
+    return { ok: true };
+  }
+
+  function resolveDisplace(state, idx, itemUid) {
+    if (state.winner != null) return { ok: false, msg: '游戏已结束。' };
+    if (state.pendingDisplace !== idx) return { ok: false, msg: '当前没有待处理的置换。' };
+    const hand = state.players[idx].hand;
+    const ci = hand.findIndex(c => c.uid === itemUid);
+    if (ci < 0) return { ok: false, msg: '手牌中没有这张牌。' };
+    if (hand[ci].type !== 'item') return { ok: false, msg: '只能选择道具牌。' };
+
+    const attacker = opponentOf(state, idx);
+    const card = hand.splice(ci, 1)[0];
+    state.players[attacker].hand.push(card);
+    log(state, `${state.players[idx].name} 将「${ITEMS[card.id].name}」交给了 ${state.players[attacker].name}。`);
+    state.pendingDisplace = null;
     state.phase = 'response';
     return { ok: true };
   }
@@ -405,11 +497,11 @@
 
   return {
     createGame, drawCard, startTurn, endTurn,
-    playIon, playItem, playCatalyst, confirmResponse,
-    findReactions, reactionsInvolving, autoNeutralize,
+    playIon, playItem, playCatalyst, playAttackItem, confirmResponse,
+    resolveDisplace, findReactions, reactionsInvolving, autoNeutralize,
     viewFor,
     // 辅助导出（UI/测试用）
-    ionKind, ionSymbol, cardLabel, isIon, handHasIon, handHasCatalyst, opponentOf, buildDeck,
+    ionKind, ionSymbol, cardLabel, isIon, handHasIon, handHasCatalyst, handHasAttackItem, opponentOf, buildDeck,
     _internal: { mulberry32, shuffle, makeCard },
   };
 });

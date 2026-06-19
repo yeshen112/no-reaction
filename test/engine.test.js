@@ -292,12 +292,13 @@ section('惩罚阶段：无离子无催化剂 → 额外摸牌并转移道具');
   const oppHandBefore = s.players[1].hand.length;
   const deckBefore = s.deck.length;
 
-  // 触发惩罚（通过 startTurn 自动）
-  Engine.startTurn(s, 0, false);
-  eq(s.phase, 'response', '惩罚后直接进入 response');
-  // A 手里的道具都转给 B
-  ok(!s.players[0].hand.some(c => c.type === 'item'), 'A 手里无道具');
-  ok(s.players[1].hand.some(c => c.id === 'stir'), 'stir 转给 B');
+	// 触发惩罚：摸2张，离子归A，道具归B
+	Engine.startTurn(s, 0, false);
+	eq(s.phase, 'response', '惩罚后直接进入 response');
+	// A 原有的道具不受影响
+	ok(s.players[0].hand.some(c => c.uid === itemUid), 'A 原有道具仍在手');
+	// 刚摸的已按类型分发，A 手里道具数量不变
+	eq(s.players[0].hand.filter(c => c.type === 'item').length, 2, 'A 道具数不变');
 }
 
 // ---------------------------------------------------------------------------
@@ -316,6 +317,178 @@ section('催化剂不可在被强制出牌时使用');
   const r = Engine.playCatalyst(s, 1, catUid);
   ok(!r.ok, '被强制时不可用催化剂');
 }
+
+// ---------------------------------------------------------------------------
+section('挥发：对手随机弃2张手牌');
+{
+  const s = freshGame();
+  s.players[0].hand = [];
+  s.players[1].hand = [];
+  s.zone = [];
+  s.phase = 'play';
+  s.activePlayer = 0;
+  s.playsThisTurn = 0;
+  s.requiredPlays = 1;
+
+  giveCard(s, 1, 'ion', 'Na');
+  giveCard(s, 1, 'ion', 'Cl');
+  giveCard(s, 1, 'item', 'stir');
+  const oppBefore = s.players[1].hand.length; // 3
+
+  const volUid = giveCard(s, 0, 'item', 'volatilize');
+  const r = Engine.playAttackItem(s, 0, volUid);
+  ok(r.ok, '挥发打出成功');
+  eq(s.phase, 'response', '挥发后进入 response');
+  eq(s.players[1].hand.length, oppBefore - 2, '对手弃了2张牌');
+  ok(!s.players[0].hand.some(c => c.uid === volUid), '挥发牌已消耗');
+}
+
+// ---------------------------------------------------------------------------
+section('挥发：对手只有1张手牌（弃1张）');
+{
+  const s = freshGame();
+  s.players[0].hand = [];
+  s.players[1].hand = [];
+  s.zone = [];
+  s.phase = 'play';
+  s.activePlayer = 0;
+  s.playsThisTurn = 0;
+  s.requiredPlays = 1;
+
+  giveCard(s, 1, 'ion', 'Na');
+  const volUid = giveCard(s, 0, 'item', 'volatilize');
+  const r = Engine.playAttackItem(s, 0, volUid);
+  ok(r.ok, '挥发打出成功');
+  eq(s.players[1].hand.length, 0, '对手唯一的手牌被弃');
+  eq(s.phase, 'response', '进入 response');
+}
+
+// ---------------------------------------------------------------------------
+section('挥发：对手无手牌（无效果）');
+{
+  const s = freshGame();
+  s.players[0].hand = [];
+  s.players[1].hand = [];
+  s.zone = [];
+  s.phase = 'play';
+  s.activePlayer = 0;
+  s.playsThisTurn = 0;
+  s.requiredPlays = 1;
+
+  const volUid = giveCard(s, 0, 'item', 'volatilize');
+  const r = Engine.playAttackItem(s, 0, volUid);
+  ok(r.ok, '挥发打出成功（对手无牌）');
+  eq(s.phase, 'response', '仍然进入 response');
+}
+
+// ---------------------------------------------------------------------------
+section('置换：对手有道具时进入待选择状态');
+{
+  const s = freshGame();
+  s.players[0].hand = [];
+  s.players[1].hand = [];
+  s.zone = [];
+  s.phase = 'play';
+  s.activePlayer = 0;
+  s.playsThisTurn = 0;
+  s.requiredPlays = 1;
+
+  giveCard(s, 1, 'item', 'stir');
+  giveCard(s, 1, 'ion', 'Na');
+  const dispUid = giveCard(s, 0, 'item', 'displace');
+  const r = Engine.playAttackItem(s, 0, dispUid);
+  ok(r.ok, '置换打出成功');
+  eq(s.pendingDisplace, 1, 'pendingDisplace 设为对手');
+  eq(s.phase, 'play', '阶段保持 play（等待对手选择）');
+}
+
+// ---------------------------------------------------------------------------
+section('置换：resolveDisplace 转移道具');
+{
+  const s = freshGame();
+  s.players[0].hand = [];
+  s.players[1].hand = [];
+  s.zone = [];
+  s.phase = 'play';
+  s.activePlayer = 0;
+  s.playsThisTurn = 0;
+  s.requiredPlays = 1;
+
+  const stirUid = giveCard(s, 1, 'item', 'stir');
+  const dispUid = giveCard(s, 0, 'item', 'displace');
+  Engine.playAttackItem(s, 0, dispUid);
+  eq(s.pendingDisplace, 1, 'pendingDisplace 已设置');
+
+  const r = Engine.resolveDisplace(s, 1, stirUid);
+  ok(r.ok, 'resolveDisplace 成功');
+  eq(s.pendingDisplace, null, 'pendingDisplace 已清除');
+  eq(s.phase, 'response', '进入 response');
+  ok(s.players[0].hand.some(c => c.uid === stirUid), '道具已转到攻击者手牌');
+  ok(!s.players[1].hand.some(c => c.uid === stirUid), '道具已离开对手手牌');
+}
+
+// ---------------------------------------------------------------------------
+section('置换：对手无道具（浪费）');
+{
+  const s = freshGame();
+  s.players[0].hand = [];
+  s.players[1].hand = [];
+  s.zone = [];
+  s.phase = 'play';
+  s.activePlayer = 0;
+  s.playsThisTurn = 0;
+  s.requiredPlays = 1;
+
+  giveCard(s, 1, 'ion', 'Na');
+  const dispUid = giveCard(s, 0, 'item', 'displace');
+  const r = Engine.playAttackItem(s, 0, dispUid);
+  ok(r.ok, '置换打出成功（对方无道具）');
+  eq(s.pendingDisplace, null, 'pendingDisplace 未设置');
+  eq(s.phase, 'response', '直接进入 response');
+}
+
+// ---------------------------------------------------------------------------
+section('攻击道具不可在被强制出牌时使用');
+{
+  const s = freshGame();
+  s.players[0].hand = [];
+  s.zone = [];
+  s.phase = 'play';
+  s.activePlayer = 0;
+  s.playsThisTurn = 0;
+  s.requiredPlays = 2;
+
+  const volUid = giveCard(s, 0, 'item', 'volatilize');
+  const r = Engine.playAttackItem(s, 0, volUid);
+  ok(!r.ok, '被强制时不可用挥发');
+  const dispUid = giveCard(s, 0, 'item', 'displace');
+  const r2 = Engine.playAttackItem(s, 0, dispUid);
+  ok(!r2.ok, '被强制时不可用置换');
+}
+
+// ---------------------------------------------------------------------------
+section('攻击道具防止惩罚阶段');
+{
+  const s = freshGame();
+  s.players[0].hand = [];
+  s.players[1].hand = [];
+  giveCard(s, 0, 'item', 'volatilize');
+  giveCard(s, 0, 'item', 'displace');
+  Engine.startTurn(s, 0, false);
+  eq(s.phase, 'play', '有攻击道具时不触发惩罚');
+}
+
+// ---------------------------------------------------------------------------
+section('viewFor 包含 pendingDisplace');
+{
+  const s = freshGame();
+  s.pendingDisplace = 1;
+  const v = Engine.viewFor(s, 0);
+  eq(v.pendingDisplace, 1, 'pendingDisplace 对玩家0可见');
+  const v2 = Engine.viewFor(s, 1);
+  eq(v2.pendingDisplace, 1, 'pendingDisplace 对玩家1可见');
+}
+
 
 // ---------------------------------------------------------------------------
 section('viewFor 隐藏对手手牌');

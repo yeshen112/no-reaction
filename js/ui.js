@@ -12,6 +12,8 @@
     role: null,        // 'host' | 'guest'
     roomCode: null,
     seat: 0,           // 我的座位（0=房主, 1=访客）
+    mode: null,        // 'online' | 'tutorial'
+    _isTutorial: false,
     sub: null,         // SSE 订阅句柄
     state: null,       // 完整 state（房主）或收到的快照（访客）
     selection: null,   // 当前选中手牌 { uid }
@@ -68,15 +70,62 @@
   // ---- 视角 ----
   function myView() {
     if (!ctx.state) return null;
+    // 教程模式：不隐藏对手手牌，学员需要看到全局
+    if (ctx._isTutorial) {
+      var v = JSON.parse(JSON.stringify(ctx.state));
+      v.you = ctx.seat;
+      v.deckCount = ctx.state.deck.length;
+      v.discardCount = ctx.state.discard.length;
+      delete v.deck;
+      return v;
+    }
     return Engine.viewFor(ctx.state, ctx.seat);
   }
 
   function canActNow(s) {
+    if (s.pendingDisplace === ctx.seat) return true;
     return s.activePlayer === ctx.seat;
+  }
+
+  // ---- 教程模式启动 ----
+  function bootTutorial() {
+    ctx.role = 'host';
+    ctx.seat = 0;
+    ctx.roomCode = 'TUTORIAL';
+
+    // 隐藏联机相关 UI
+    $('room-tag').hidden = true;
+    $('btn-quit').textContent = '退出教程';
+    showWaiting(false);
+
+    // 创建脚本化游戏
+    ctx.state = Engine.createGame({
+      seed: 0x54F01A1,
+      playerNames: ['你', '教程助手']
+    });
+    ctx.state.started = true;
+
+    // 初始化教程模块
+    Tutorial.init(ctx.state, render, function (type, payload) {
+      var res = applyAction(ctx.state, ctx.seat, { type: type, payload: payload || {} });
+      render(res);
+      return res;
+    });
+
+    Tutorial.start();
+    render();
   }
 
   // ---- 启动 ----
   function boot() {
+    ctx.mode = launch.mode || 'online';
+    ctx._isTutorial = (ctx.mode === 'tutorial');
+
+    if (ctx._isTutorial) {
+      bootTutorial();
+      return;
+    }
+
     ctx.role = launch.role;
     ctx.roomCode = launch.roomCode;
     ctx.seat = launch.role === 'host' ? 0 : 1;
@@ -202,13 +251,36 @@
     switch (action.type) {
       case 'playIon':         return Engine.playIon(state, seat, p.uid);
       case 'playCatalyst':    return Engine.playCatalyst(state, seat, p.uid);
+      case 'playAttackItem':  return Engine.playAttackItem(state, seat, p.uid);
       case 'playItem':        return Engine.playItem(state, seat, p.uid, p.params || {});
       case 'confirmResponse': return Engine.confirmResponse(state, seat);
+      case 'resolveDisplace': return Engine.resolveDisplace(state, seat, p.uid);
       default: return { ok: false, msg: '未知动作' };
     }
   }
 
   async function doAction(type, payload) {
+    // 教程模式：校验动作
+    if (ctx._isTutorial && Tutorial.isActive()) {
+      var check = Tutorial.checkAction(type, payload || {});
+      if (!check.allowed) {
+        banner(check.msg || '请按教程指引操作', true);
+        // 抖动目标元素
+        var targetEl = document.querySelector('#hand .card.selected');
+        if (!targetEl) targetEl = document.querySelector('#hand .card.selectable');
+        if (targetEl) {
+          targetEl.classList.add('tutorial-shake');
+          setTimeout(function () { targetEl.classList.remove('tutorial-shake'); }, 500);
+        }
+        return { ok: false, msg: check.msg };
+      }
+      // 动作允许，直接结算
+      var tres = applyAction(ctx.state, ctx.seat, { type: type, payload: payload || {} });
+      render(tres);
+      Tutorial.onActionTaken();
+      return tres;
+    }
+
     if (ctx.role === 'guest') {
       try { await Network.pushAction(ctx.roomCode, { type, payload }); }
       catch (e) { banner('提交失败：' + (e && e.message || e), true); }
@@ -226,6 +298,7 @@
   let _prevActivePlayer = -1;
   let _myTurnCount = 0;
   function showTurnNotice(v) {
+    if (ctx._isTutorial) return; // 教程用自己的对话框引导
     if (!v || v.winner != null) return;
     if (v.activePlayer !== ctx.seat) { _prevActivePlayer = v.activePlayer; return; }
     if (v.playsThisTurn !== 0) { _prevActivePlayer = v.activePlayer; return; }
@@ -303,6 +376,11 @@
     showTurnNotice(v);
 
     if (v.winner != null) showOver(v);
+
+    // 教程模式：重新定位聚光灯
+    if (ctx._isTutorial && Tutorial.isActive()) {
+      Tutorial._onPostRender();
+    }
   }
 
   function renderDeck(v) {
@@ -381,9 +459,10 @@
     } else {
       el.classList.add('item');
       const def = ITEMS[card.id];
+      if (def && def.kind === 'attack') el.classList.add('attack');
       el.innerHTML = `<span class="tag">道具</span>` +
                      `<span class="sym">${def.name}</span>` +
-                     `<span class="nm">${def.kind === 'attack' ? '攻击' : def.kind === 'neutral' ? '中性' : '防守'}</span>`;
+                     `<span class="nm">${def && def.kind === 'attack' ? '攻击' : def && def.kind === 'neutral' ? '中性' : '防守'}</span>`;
     }
     if (highlight) el.classList.add('in-reaction');
     return el;
@@ -394,10 +473,18 @@
     const me = v.players[v.you];
     $('me-name').textContent = me.name + '（你）';
     const phaseLabel = (() => {
+      if (v.pendingDisplace === ctx.seat) {
+        const attacker = v.players[(ctx.seat + 1) % v.players.length];
+        return `${(attacker && attacker.name) || '对手'} 对你使用了「置换」，请选择一张道具牌交出`;
+      }
+      if (v.pendingDisplace != null && v.pendingDisplace !== ctx.seat) {
+        const target = v.players[v.pendingDisplace];
+        return `等待 ${(target && target.name) || '对手'} 选择道具交出…`;
+      }
       if (v.phase === 'play') {
         const required = v.requiredPlays || 1;
         if (required > 1) return `催化剂效果：出第 ${(v.playsThisTurn || 0) + 1} / ${required} 张离子牌`;
-        return '出牌阶段：打出一张离子牌（或催化剂）';
+        return '出牌阶段：打出一张离子牌（或催化剂 / 攻击道具）';
       }
       if (v.phase === 'response') return '道具阶段：可使用道具，完成后点「确认结束」';
       if (v.phase === 'over') return '游戏结束';
@@ -427,9 +514,19 @@
   }
 
   function isPlayable(v, c) {
+    // 置换待处理时：对手可选道具交出
+    if (v.pendingDisplace === ctx.seat) {
+      return c.type === 'item';
+    }
     if (v.phase === 'play') {
       if (c.type === 'ion') return true;
-      if (c.id === 'catalyst') return (v.requiredPlays || 1) === 1;
+      if (c.type === 'item') {
+        const def = ITEMS[c.id];
+        if (!def) return false;
+        if (c.id === 'catalyst') return (v.requiredPlays || 1) === 1;
+        if (def.kind === 'attack') return (v.requiredPlays || 1) === 1;
+        return false;
+      }
       return false;
     }
     if (v.phase === 'response') {
@@ -487,12 +584,22 @@
 
   // ---- 交互 ----
   function onHandClick(v, card) {
+    // 置换待处理时：点击道具即交出
+    if (v.pendingDisplace === ctx.seat) {
+      if (card.type === 'item') return doAction('resolveDisplace', { uid: card.uid });
+      return;
+    }
     if (card.type === 'ion') {
       if (v.phase === 'play') return doAction('playIon', { uid: card.uid });
       return;
     }
     if (card.id === 'catalyst') {
       if (v.phase === 'play') return doAction('playCatalyst', { uid: card.uid });
+      return;
+    }
+    // 其他攻击道具
+    if (card.type === 'item' && ITEMS[card.id] && ITEMS[card.id].kind === 'attack') {
+      if (v.phase === 'play') return doAction('playAttackItem', { uid: card.uid });
       return;
     }
     if (['extract', 'heat', 'neutralize'].includes(card.id)) {
@@ -513,6 +620,7 @@
 
   // ---- 结束模态 ----
   function showOver(v) {
+    if (ctx._isTutorial) return; // 教程用自己的完成界面
     const iWon = v.winner === ctx.seat;
     $('over-title').textContent = iWon ? '🏆 你赢了！' : '💧 你输了';
     $('over-title').className = iWon ? 'win' : 'lose';

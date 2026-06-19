@@ -34,14 +34,27 @@ function step(s, rng) {
   const seat = s.activePlayer;
   const hand = s.players[seat].hand;
 
+  // 若有待处理的置换，目标玩家随机选一张道具交出
+  if (s.pendingDisplace != null) {
+    const targetIdx = s.pendingDisplace;
+    const items = s.players[targetIdx].hand.filter(c => c.type === 'item');
+    if (items.length > 0) {
+      const chosen = items[rand(rng, items.length)];
+      return Engine.resolveDisplace(s, targetIdx, chosen.uid);
+    }
+    // 不应到达这里（applyDisplace 已在无道具时跳过 pending）
+    return { ok: false, stuck: true };
+  }
+
   if (s.phase === 'play') {
     const required = s.requiredPlays || 1;
     const ions = hand.filter(c => c.type === 'ion');
     const choices = [];
     ions.forEach(c => choices.push({ type: 'playIon', uid: c.uid }));
-    // 催化剂只能在正常出牌轮（requiredPlays=1）使用
+    // 攻击道具只能在正常出牌轮（requiredPlays=1）使用
     if (required === 1) {
       hand.filter(c => c.id === 'catalyst').forEach(c => choices.push({ type: 'playCatalyst', uid: c.uid }));
+      hand.filter(c => ['volatilize', 'displace'].includes(c.id)).forEach(c => choices.push({ type: 'playAttackItem', uid: c.uid }));
     }
     if (choices.length === 0) {
       // 理论上不应到达这里（惩罚已在 startTurn 自动处理）
@@ -49,7 +62,8 @@ function step(s, rng) {
     }
     const ch = choices[rand(rng, choices.length)];
     if (ch.type === 'playIon') return Engine.playIon(s, seat, ch.uid);
-    return Engine.playCatalyst(s, seat, ch.uid);
+    if (ch.type === 'playCatalyst') return Engine.playCatalyst(s, seat, ch.uid);
+    return Engine.playAttackItem(s, seat, ch.uid);
   }
 
   if (s.phase === 'response') {
@@ -63,6 +77,7 @@ function step(s, rng) {
       hand.forEach(c => {
         if (c.type !== 'item') return;
         if (c.id === 'catalyst') return; // 催化剂不能在 response 用
+        if (['volatilize', 'displace'].includes(c.id)) return; // 攻击道具不能在 response 用
         if (c.id === 'filter' && isPpt) tries.push({ uid: c.uid, params: {} });
         if (c.id === 'heat' && isGas) tries.push({ uid: c.uid, params: {} });
         if (c.id === 'stir') tries.push({ uid: c.uid, params: {} });

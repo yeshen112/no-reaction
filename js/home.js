@@ -56,6 +56,11 @@
     }
   });
 
+  // ---- 教程：无需服务器 ----
+  $('btn-tutorial').addEventListener('click', function () {
+    go({ mode: 'tutorial' });
+  });
+
   // 房间码输入框自动大写
   $('room-code').addEventListener('input', (e) => {
     e.target.value = e.target.value.toUpperCase();
