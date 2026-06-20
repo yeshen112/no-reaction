@@ -369,7 +369,9 @@
     _prevHandUids = new Set(currentUids);
 
     renderHand(v);
-    if (newUids.length > 0) animateDraw(newUids);
+    // 教程模式不播放“摸牌飞入”动画：教程的手牌是脚本化下发的，
+    // 飞入动画会让卡牌在落位前处于牌堆附近（右上角），导致引导弹窗对错位置。
+    if (newUids.length > 0 && !ctx._isTutorial) animateDraw(newUids);
     renderDeck(v);
     renderActions(v);
     renderLog(v);
@@ -647,6 +649,10 @@
   $('btn-home').addEventListener('click', async () => { await cleanup(true); location.href = 'index.html'; });
   $('btn-quit').addEventListener('click', async () => {
     if (confirm('确定退出当前对局？')) { await cleanup(true); location.href = 'index.html'; }
+  });
+  var _encBtn = $('btn-encyclopedia');
+  if (_encBtn) _encBtn.addEventListener('click', function () {
+    if (window.Encyclopedia) Encyclopedia.open();
   });
 
   async function cleanup(intentional) {

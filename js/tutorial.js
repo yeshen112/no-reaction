@@ -2,12 +2,19 @@
  * 新手教程模块 —— 覆盖层引导式。
  * 在真实游戏 UI 上叠加聚光灯 + 对话框，脚本化游戏状态，逐步引导新手操作。
  *
- * 导出 window.Tutorial（IIFE 模式，与其余 JS 模块一致）。
+ * 浏览器中导出 window.Tutorial；Node 中导出 module.exports（供冒烟测试驱动真实步骤）。
+ * 两端共用同一份步骤定义与 _applyAuto 执行器，避免测试与运行时漂移。
  */
 (function () {
   'use strict';
 
-  const $ = function (id) { return document.getElementById(id); };
+  // Engine 解析：浏览器取全局，Node 取 require（让步骤逻辑可离线测试）。
+  var Engine = (typeof window !== 'undefined' && window.Engine) ||
+    (typeof require !== 'undefined' ? require('./engine.js') : null);
+
+  const $ = function (id) {
+    return (typeof document !== 'undefined') ? document.getElementById(id) : null;
+  };
 
   // ---- 私有状态 ----
   let _state = null;         // Engine state
@@ -17,159 +24,158 @@
   let _active = false;
   let _timer = null;         // auto-play timer
   let _stepCtx = {};         // inter-step context (stores UIDs etc.)
+  // 步骤代际令牌：每次步骤切换 +1。所有异步回调（定时器 / onNext 播放完成）
+  // 在恢复时校验自己启动时的代际是否仍是当前代际，过期则直接放弃，
+  // 杜绝“上一步遗留的回调把当前步骤又推进一格”导致的连跳多个对话框。
+  let _gen = 0;
 
   // ---- DOM 缓存 ----
   let _overlay, _spotlight, _dialog, _dialogText, _nextBtn, _skipBtn;
 
   // ---- 步骤定义 ----
+  // 教程是一段连贯的对局：你先在自己的回合体验「出牌→引发反应→防守解除→结束」，
+  // 再观察对手回合，然后学习两张攻击道具，最后逼对手触发反应取胜。
+  // 每个 setup 尽量承接上一步的真实棋面，避免“瞬移”到陌生局面。
   const _steps = [
-    // ── 步骤 0：欢迎 ──
+    // ── 步骤 0：欢迎（铺设第一回合棋面）──
     {
       id: 'welcome',
-      text: '欢迎来到 <b>No Reaction</b>！<br><br>这是一款化学离子卡牌对战游戏。你和对手轮流往<b>反应区</b>打出离子牌——但要小心，如果反应区中形成了<b>沉淀</b>或<b>气体</b>反应，你就会输掉这一局。<br><br>准备好学习基础操作了吗？点击「下一步」开始。',
+      text: '欢迎来到 <b>No Reaction</b>！<br><br>这是一款化学离子卡牌对战游戏。双方轮流往<b>反应区</b>打出离子牌——谁打出的牌触发了<b>沉淀</b>或<b>气体</b>反应、又无法解除，谁就输掉这一局。<br><br>先从你的回合开始。注意看，反应区里已经有对手留下的一张 <b>SO₄²⁻</b>（硫酸根）。',
       target: null,
       expected: null,
       dialogPos: 'center',
       setup: function (s) {
         _initCleanState(s);
-      }
-    },
-
-    // ── 步骤 1：打出离子牌 ──
-    {
-      id: 'play-ion',
-      text: '这是你的<b>手牌区</b>。现在请点击一张<b>离子牌</b>（有红色或蓝色顶边的牌）打出到反应区。',
-      target: function () { return _findCardInHand('ion', 'Ba'); },
-      expected: 'playIon',
-      dialogPos: 'above',
-      hint: '点击手牌中带颜色的离子牌即可打出',
-      setup: function (s) {
-        _initCleanState(s);
         s.phase = 'play';
         s.activePlayer = 0;
-        s.playsThisTurn = 0;
-        s.requiredPlays = 1;
         s.players[0].hand = [];
-        s.players[1].hand = [];
-        // 给学员几张牌
+        // 只给两张牌，避免新手在第一步纠结：一张会引发反应的离子 + 一张解药
         _giveCard(s, 0, 'ion', 'Ba');
         _giveCard(s, 0, 'item', 'filter');
-        _giveCard(s, 0, 'ion', 'Na');
-        _stepCtx.targetUid = s.players[0].hand[0].uid; // Ba²⁺
-      }
-    },
-
-    // ── 步骤 2：观察反应 ──
-    {
-      id: 'see-reaction',
-      text: '⚠ 反应区中出现了<b>沉淀反应 BaSO₄↓</b>！<br><br>如果不处理而直接「确认结束」，你就会输掉。好消息是，你手牌中有一张<b>「过滤」</b>道具可以解除它。',
-      target: function () { return document.querySelector('#zone .card'); },
-      expected: null,
-      dialogPos: 'above',
-      hint: '请点击「下一步」继续',
-      setup: function (s) {
-        _initCleanState(s);
-        s.phase = 'response';
-        s.activePlayer = 0;
-        s.zone = [];
-        _seedZone(s, 'Ba');
-        _seedZone(s, 'SO4');
-        s.players[0].hand = [];
-        _giveCard(s, 0, 'item', 'filter');
-        _stepCtx.filterUid = s.players[0].hand[0].uid;
+        _stepCtx.baUid = s.players[0].hand[0].uid;
         s.players[1].hand = [];
         _giveCard(s, 1, 'ion', 'Na');
+        // 反应区预置 SO₄²⁻，等待学员的 Ba²⁺ 来“引爆”
+        s.zone = [];
+        _seedZone(s, 'SO4');
       }
     },
 
-    // ── 步骤 3：使用过滤 ──
+    // ── 步骤 1：打出离子牌（亲手引发反应）──
+    {
+      id: 'play-ion',
+      text: '点击你手里的 <b>Ba²⁺</b>（钡离子）把它打到反应区。<br><br>留意它和已有的 SO₄²⁻ 会发生什么。',
+      target: function () { return _findCardInHand('ion', 'Ba'); },
+      expected: 'playIon',
+      dialogPos: 'auto',
+      hint: '点击高亮的 Ba²⁺ 离子牌打出',
+      setup: function () { /* 承接步骤 0 的棋面，无需重置 */ }
+    },
+
+    // ── 步骤 2：观察反应（由上一步自然产生）──
+    {
+      id: 'see-reaction',
+      text: '⚠ 你打出的 <b>Ba²⁺</b> 和 <b>SO₄²⁻</b> 结合成了 <b>BaSO₄↓ 沉淀</b>！<br><br>现在如果直接「确认结束」，你就判负了。好在你手里还有一张 <b>「过滤」</b>道具，可以移走这对沉淀离子。',
+      target: function () { return $('zone'); },
+      expected: null,
+      dialogPos: 'auto',
+      hint: '请点击「下一步」继续',
+      setup: function () { /* 连贯承接，不重置棋面 */ }
+    },
+
+    // ── 步骤 3：使用过滤（解除自己造成的反应）──
     {
       id: 'use-filter',
-      text: '点击手牌中的<b>「过滤」</b>道具来移除反应区中的沉淀离子。',
+      text: '点击手里的 <b>「过滤」</b>道具，移走反应区里那对沉淀离子。',
       target: function () { return _findCardInHand('item', 'filter'); },
       expected: 'playItem',
-      dialogPos: 'above',
-      hint: '点击手牌中金色的「过滤」道具牌',
-      setup: function (s) {
-        // 保持上一步的状态
-        // 不做额外 setup，由步骤 2 的 onEnter 效果衔接
-      }
+      expectedItemId: 'filter',
+      dialogPos: 'auto',
+      hint: '点击高亮的「过滤」道具牌',
+      setup: function () { /* 连贯承接 */ }
     },
 
     // ── 步骤 4：确认结束 ──
     {
       id: 'confirm-response',
-      text: '反应区已安全（无沉淀或气体反应）。现在点击<b>「确认结束」</b>按钮结束你的道具阶段。',
+      text: '反应区已经安全（没有沉淀或气体反应）。<br><br>点击 <b>「确认结束」</b> 按钮，结束你这一回合。',
       target: function () { return document.querySelector('#hand-actions .btn'); },
       expected: 'confirmResponse',
-      dialogPos: 'above',
+      dialogPos: 'auto',
       hint: '点击下方的「确认结束道具阶段」按钮',
-      setup: function (s) {
-        // 过滤已消耗，zone 为空，phase 已是 response（由前一步结算）
-      }
+      setup: function () { /* 过滤已消耗、zone 已空，连贯承接 */ }
     },
 
-    // ── 步骤 5：对手回合（自动播放）──
+
+    // ── 步骤 5：对手回合（点「下一步」后播放）──
     {
       id: 'opponent-turn',
-      text: '现在轮到对手「教程助手」操作。对手会打出一张离子牌到反应区。<br><br>观察对手的动作，注意反应区的变化。',
-      target: null,
+      text: '你的回合结束了，轮到对手「教程助手」。<br><br>点「下一步」，看它往反应区打出一张离子牌——留意反应区有没有变化。',
+      target: function () { return $('zone'); },
       expected: null,
-      dialogPos: 'center',
+      dialogPos: 'auto',
       hint: '请点击「下一步」继续',
       setup: function (s) {
-        // 确认结束后 turn 已切换到对手
-        // 再额外准备对手手牌
+        // 步骤 4 确认结束后，回合已自动切到对手（seat 1）。
+        // 给对手一张安全离子（Na⁺ 不与空反应区反应），让新手看清“出牌但不触发”的常态。
+        s.activePlayer = 1;
+        s.phase = 'play';
+        s.playsThisTurn = 0;
+        s.requiredPlays = 1;
+        s.zone = [];
         s.players[1].hand = [];
-        _giveCard(s, 1, 'ion', 'Cl');
+        _giveCard(s, 1, 'ion', 'Na');
         _stepCtx.oppIonUid = s.players[1].hand[0].uid;
+        // 关键：先给“你”补一张离子。对手回合结束后会自动 startTurn 切回你，
+        // 若此刻你手里没有离子，会触发惩罚（额外摸牌 + 道具飞给对手），
+        // 一连串卡牌动画会让新手误以为“对手连出了两张道具”。补一张离子即可避免。
+        s.players[0].forcedIons = 0;
+        s.players[0].hand = [];
+        _giveCard(s, 0, 'ion', 'Cl');
       },
-      onEnter: function () {
-        // 自动执行对手出牌（seat=1），完成后等待用户点击下一步
+      // 点「下一步」时才播放：对手出牌（停顿看清）→ 确认结束，播完再进入下一步。
+      onNext: function (done) {
         _autoPlay([
-          { type: 'playIon', uid: _stepCtx.oppIonUid, seat: 1, delay: 800 },
-        ], function () {
-          _autoPlay([
-            { type: 'confirmResponse', seat: 1, delay: 500 },
-          ]);
-        });
+          { type: 'playIon', pick: 'ion', seat: 1, delay: 450 },
+          { type: 'confirmResponse', seat: 1, delay: 650 },
+        ], done);
       }
     },
 
     // ── 步骤 6：使用催化剂 ──
     {
       id: 'play-catalyst',
-      text: '现在到你出牌。试试<b>攻击道具「催化剂」</b>——它替代离子牌打出，不往反应区放东西，但<b>对手下回合必须连续出 2 张离子牌</b>！',
+      text: '又轮到你了。除了普通离子，你还能打<b>攻击道具</b>。<br><br>先试 <b>「催化剂」</b>——它替代离子牌打出，自己不往反应区放东西，但<b>对手下回合必须连出 2 张离子牌</b>，更容易踩雷。',
       target: function () { return _findCardInHand('item', 'catalyst'); },
       expected: 'playCatalyst',
-      dialogPos: 'above',
-      hint: '点击手牌中红色的「催化剂」攻击道具',
+      expectedItemId: 'catalyst',
+      dialogPos: 'auto',
+      hint: '点击高亮的「催化剂」攻击道具',
       setup: function (s) {
-        // 设置玩家回合
+        // 对手回合结束后回到你（seat 0）。给一手含催化剂的牌。
         s.phase = 'play';
         s.activePlayer = 0;
         s.playsThisTurn = 0;
         s.requiredPlays = 1;
+        s.players[0].forcedIons = 0;
         s.players[0].hand = [];
         _giveCard(s, 0, 'item', 'catalyst');
-        _giveCard(s, 0, 'ion', 'Na');
         _giveCard(s, 0, 'ion', 'Cl');
         _stepCtx.catalystUid = s.players[0].hand[0].uid;
-        s.zone = [];
-        _seedZone(s, 'SO4');
       }
     },
 
     // ── 步骤 7：使用挥发 ──
     {
       id: 'play-volatilize',
-      text: '再来试试<b>攻击道具「挥发」</b>——打出的回合会<b>让对手随机弃置 2 张手牌</b>。这是削弱对手防御的好办法！',
+      text: '催化剂打出了，对手下回合会被迫连出 2 张离子牌。<br><br>再认识一张攻击道具 <b>「挥发」</b>——打出后<b>让对手随机弃掉 2 张手牌</b>，直接削弱它的防守能力。',
       target: function () { return _findCardInHand('item', 'volatilize'); },
       expected: 'playAttackItem',
-      dialogPos: 'above',
-      hint: '点击手牌中红色的「挥发」攻击道具',
+      expectedItemId: 'volatilize',
+      dialogPos: 'auto',
+      hint: '点击高亮的「挥发」攻击道具',
       setup: function (s) {
-        // 催化剂已打出，现在给新回合
+        // 催化剂回合结束后的新回合（仍是你，用于连续教学两张道具）。
         s.phase = 'play';
         s.activePlayer = 0;
         s.playsThisTurn = 0;
@@ -178,54 +184,49 @@
         s.players[1].forcedIons = 0;
         s.players[0].hand = [];
         _giveCard(s, 0, 'item', 'volatilize');
-        _giveCard(s, 0, 'ion', 'Fe');
+        _giveCard(s, 0, 'ion', 'Cl');
         s.players[1].hand = [];
         _giveCard(s, 1, 'ion', 'Na');
         _giveCard(s, 1, 'item', 'stir');
-        _giveCard(s, 1, 'ion', 'SO4');
         _stepCtx.volUid = s.players[0].hand[0].uid;
-        s.zone = [];
-        _seedZone(s, 'Cl');
       }
     },
 
     // ── 步骤 8：对手惩罚（自动播放）──
     {
       id: 'opponent-penalty',
-      text: '现在轮到对手。但对手手牌中<b>既没有离子牌也没有攻击道具</b>，触发了<b>惩罚阶段</b>！<br><br>惩罚：额外摸 2 张牌，摸到的道具交给对手。',
-      target: null,
+      text: '你的攻势让对手陷入困境：轮到它时，它手里<b>既没有离子牌、也没有攻击道具</b>，触发了<b>惩罚</b>！<br><br>惩罚规则：额外摸 2 张牌，其中摸到的道具直接送给对手（也就是你）。',
+      target: function () { return $('zone'); },
       expected: null,
-      dialogPos: 'center',
+      dialogPos: 'auto',
       hint: '请点击「下一步」继续',
       setup: function (s) {
-        // 挥发打出后进入 response → confirm → 轮到对手
-        // 手动设置对手的回合，让其触发惩罚
+        // 切到对手回合，且对手手里只有道具、没有离子 → startTurn 触发惩罚。
         s.phase = 'play';
         s.activePlayer = 1;
         s.playsThisTurn = 0;
         s.requiredPlays = 1;
         s.players[1].forcedIons = 0;
-        s.players[1].hand = [];
-        // 只给道具，不给离子 → 触发惩罚
-        _giveCard(s, 1, 'item', 'heat');
         s.players[0].forcedIons = 0;
+        s.players[1].hand = [];
+        _giveCard(s, 1, 'item', 'heat');
       },
-      onEnter: function () {
-        // 触发对手 startTurn → 惩罚 → 自动确认，完成后等待用户点击下一步
+      onNext: function (done) {
+        // 点「下一步」后才播放：startTurn 触发惩罚（停顿看清）→ 确认结束。
         _autoPlay([
-          { type: '_startTurn', seat: 1, delay: 500 },
-          { type: 'confirmResponse', seat: 1, delay: 900 },
-        ]);
+          { type: '_startTurn', seat: 1, delay: 450 },
+          { type: 'confirmResponse', seat: 1, delay: 650 },
+        ], done);
       }
     },
 
-    // ── 步骤 9：胜利（自动播放）──
+    // ── 步骤 9：胜利（点「下一步」后播放）──
     {
       id: 'win',
-      text: '现在对手打出离子牌触发了<b>无法解除的反应</b>——你赢了！🎉<br><br>这就是 No Reaction 的核心：<b>让对手触发反应，同时保护自己。</b>',
-      target: null,
+      text: '最后一击：反应区里有你留下的 <b>Ba²⁺</b>。点「下一步」，看对手被迫打出 <b>SO₄²⁻</b>——凑成 <b>BaSO₄↓ 沉淀</b>，而它手里没有任何道具能解除。',
+      target: function () { return $('zone'); },
       expected: null,
-      dialogPos: 'center',
+      dialogPos: 'auto',
       hint: '请点击「下一步」继续',
       setup: function (s) {
         s.phase = 'play';
@@ -233,6 +234,7 @@
         s.playsThisTurn = 0;
         s.requiredPlays = 1;
         s.players[1].forcedIons = 0;
+        s.players[0].forcedIons = 0;
         s.players[1].hand = [];
         _giveCard(s, 1, 'ion', 'SO4');
         _stepCtx.oppIon2Uid = s.players[1].hand[0].uid;
@@ -240,34 +242,22 @@
         _seedZone(s, 'Ba');
         s.players[0].hand = [];
       },
-      onEnter: function () {
-        // 自动执行对手出牌触发反应 → 判负，完成后等待用户点击下一步
+      onNext: function (done) {
         _autoPlay([
-          { type: 'playIon', uid: _stepCtx.oppIon2Uid, seat: 1, delay: 800 },
-        ], function () {
-          _autoPlay([
-            { type: 'confirmResponse', seat: 1, delay: 500 },
-          ]);
-        });
+          { type: 'playIon', pick: 'ion', seat: 1, delay: 450 },
+          { type: 'confirmResponse', seat: 1, delay: 650 },
+        ], done);
       }
     },
 
     // ── 步骤 10：完成 ──
     {
       id: 'completion',
-      text: '🎉 <b>恭喜完成新手教程！</b><br><br>你已经掌握了：<br>• 打出离子牌与观察反应区<br>• 使用防守道具（过滤）解除沉淀<br>• 使用攻击道具（催化剂 / 挥发）压制对手<br>• 触发对手反应获胜<br><br>现在去创建或加入房间，开始真正的对局吧！',
+      text: '🎉 <b>恭喜完成新手教程！</b><br><br>你已经掌握了：<br>• 打出离子牌、观察反应区<br>• 用防守道具（过滤）解除沉淀<br>• 用攻击道具（催化剂 / 挥发）压制对手<br>• 逼对手触发反应取胜<br><br>想随时查阅每张牌的作用，点顶栏的 <b>📖 百科</b>。现在去开一局真正的对战吧！',
       target: null,
       expected: null,
       dialogPos: 'center',
-      setup: function () {},
-      onEnter: function () {
-        // 将「下一步」按钮变为「开始对战」
-        _nextBtn.textContent = '开始对战';
-        _nextBtn.onclick = function () {
-          Tutorial.skip();
-        };
-        _skipBtn.style.display = 'none';
-      }
+      setup: function () {}
     }
   ];
 
@@ -343,50 +333,107 @@
     _spotlight.style.top = (rect.top - pad) + 'px';
     _spotlight.style.width = (rect.width + pad * 2) + 'px';
     _spotlight.style.height = (rect.height + pad * 2) + 'px';
-    _positionDialog(rect, step.dialogPos || 'above');
+    _positionDialog(rect, step.dialogPos || 'auto');
   }
 
-  // 对话框定位
+  // 对话框定位：视口感知，自动在目标上/下方择优摆放，并用箭头指向目标。
   function _positionDialog(targetRect, pos) {
     if (!_dialog) return;
     var vw = window.innerWidth;
     var vh = window.innerHeight;
-    var dw = 340; // max-width
-    var left, top;
+    var margin = 14;          // 距视口边缘
+    var gap = 14;             // 对话框与目标的间距
+    var dw = Math.min(340, vw - margin * 2);
+    var dh = _dialog.offsetHeight || 180;
+    var left, top, arrow = 'none';
 
+    // 无目标 / 居中：放在视口下三分之一，避免遮住上方的反应区
     if (!targetRect || pos === 'center') {
-      left = Math.max(16, (vw - dw) / 2);
-      top = vh * 0.3;
-    } else if (pos === 'above') {
-      left = Math.max(16, Math.min(vw - dw - 16, targetRect.left + targetRect.width / 2 - dw / 2));
-      var dialogH = _dialog.offsetHeight || 180;
-      top = Math.max(16, targetRect.top - dialogH - 12);
-    } else if (pos === 'below') {
-      left = Math.max(16, Math.min(vw - dw - 16, targetRect.left + targetRect.width / 2 - dw / 2));
-      top = Math.min(vh - _dialog.offsetHeight - 16, targetRect.bottom + 12);
+      left = (vw - dw) / 2;
+      top = Math.min(vh - dh - margin, vh * 0.58);
+      _applyDialog(left, top, 'none');
+      return;
     }
 
-    _dialog.style.left = left + 'px';
-    _dialog.style.top = top + 'px';
+    // 水平居中对齐目标，并夹在视口内
+    var cx = targetRect.left + targetRect.width / 2;
+    left = Math.max(margin, Math.min(vw - dw - margin, cx - dw / 2));
+
+    // 计算上方 / 下方可用空间
+    var spaceAbove = targetRect.top - gap - margin;
+    var spaceBelow = vh - targetRect.bottom - gap - margin;
+
+    var place = pos;
+    if (pos === 'auto' || (pos !== 'above' && pos !== 'below')) {
+      // 优先放在空间更充足的一侧
+      place = spaceBelow >= dh ? 'below'
+            : spaceAbove >= dh ? 'above'
+            : (spaceBelow >= spaceAbove ? 'below' : 'above');
+    } else if (pos === 'above' && spaceAbove < dh && spaceBelow >= dh) {
+      place = 'below'; // 上方放不下则翻到下方
+    } else if (pos === 'below' && spaceBelow < dh && spaceAbove >= dh) {
+      place = 'above';
+    }
+
+    if (place === 'above') {
+      top = Math.max(margin, targetRect.top - dh - gap);
+      arrow = 'down';
+    } else {
+      top = Math.min(vh - dh - margin, targetRect.bottom + gap);
+      arrow = 'up';
+    }
+
+    // 箭头水平位置：对准目标中心（相对对话框左缘）
+    var arrowX = Math.max(16, Math.min(dw - 16, cx - left));
+    _dialog.style.setProperty('--arrow-x', arrowX + 'px');
+    _applyDialog(left, top, arrow);
   }
 
-  // 自动播放对手动作（直接调 Engine，跳过教程门禁和 ctx.seat）
+  function _applyDialog(left, top, arrow) {
+    _dialog.style.left = left + 'px';
+    _dialog.style.top = top + 'px';
+    _dialog.setAttribute('data-arrow', arrow);
+  }
+
+  // 应用一个自动动作到 state（纯逻辑，无 DOM / 无定时器）。
+  // 供运行时定时驱动与离线冒烟测试共用，是“对手自动行动”的唯一真相来源。
+  // act: { type, seat?, uid?, pick? }
+  //   pick: 'ion' → 取该 seat 手牌中第一张离子牌的 uid（省去跨步骤记 uid）。
+  function _applyAuto(state, act) {
+    var seat = act.seat != null ? act.seat : state.activePlayer;
+    if (act.type === '_startTurn') {
+      state.players[seat].forcedIons = state.players[seat].forcedIons || 0;
+      return Engine.startTurn(state, seat, false);
+    }
+    if (act.type === 'confirmResponse') {
+      return Engine.confirmResponse(state, seat);
+    }
+    if (act.type === 'playIon') {
+      var uid = act.uid;
+      if (uid == null && act.pick === 'ion') {
+        var ion = (state.players[seat].hand || []).find(function (c) { return c.type === 'ion'; });
+        uid = ion && ion.uid;
+      }
+      return Engine.playIon(state, seat, uid);
+    }
+    if (act.type === 'playItem') {
+      return Engine.playItem(state, seat, act.uid, act.params || {});
+    }
+    return { ok: false, msg: '未知自动动作: ' + act.type };
+  }
+
+  // 自动播放对手动作（定时执行 _applyAuto，并在每步后重渲染）
+  // 绑定启动时的代际：若中途步骤被切换（_gen 变化），立即中止，不再执行后续动作，
+  // 也不调用 onDone，避免把已经不属于当前步骤的流程继续推进。
   function _autoPlay(actions, onDone) {
+    var myGen = _gen;
     function run(i) {
+      if (!_active || myGen !== _gen) return;        // 步骤已切换，放弃
       if (i >= actions.length) { if (onDone) onDone(); return; }
       var act = actions[i];
       _timer = setTimeout(function () {
-        var seat = act.seat != null ? act.seat : _state.activePlayer;
-        if (act.type === '_startTurn') {
-          _state.players[seat].forcedIons = _state.players[seat].forcedIons || 0;
-          Engine.startTurn(_state, seat, false);
-        } else if (act.type === 'confirmResponse') {
-          Engine.confirmResponse(_state, seat);
-        } else if (act.type === 'playIon') {
-          Engine.playIon(_state, seat, act.uid);
-        } else {
-          _rawDoAction(act.type, { uid: act.uid });
-        }
+        if (!_active || myGen !== _gen) return;       // 触发时再次校验
+        _applyAuto(_state, act);
         _renderFn();
         run(i + 1);
       }, act.delay || 600);
@@ -394,37 +441,110 @@
     run(0);
   }
 
-  // 前进到下一步
-  function _advance() {
+  // 重定位一次聚光灯/弹窗，兜底布局回流（如字体加载、滚动条出现导致的尺寸变化）。
+  // 教程已禁用摸牌飞入动画（见 ui.js），卡牌渲染即落位，无需多档反复校正。
+  var _settleTimers = [];
+  function _clearSettle() {
+    for (var i = 0; i < _settleTimers.length; i++) clearTimeout(_settleTimers[i]);
+    _settleTimers = [];
+  }
+  function _scheduleSettle(step) {
+    _clearSettle();
+    // 仅对有高亮目标的步骤需要校正（居中弹窗与目标无关）
+    if (typeof step.target !== 'function') return;
+    _settleTimers.push(setTimeout(function () {
+      if (_active && _steps[_currentStep] === step) _positionSpotlight(step);
+    }, 260));
+  }
+
+  // 前进到下一步。done(): 对话框真正显示到屏幕后回调（用于释放推进锁）。
+  function _advance(done) {
     if (_currentStep >= _steps.length) {
       Tutorial.skip();
       return;
     }
     var step = _steps[_currentStep];
+    var myGen = _gen;
     if (step.setup) step.setup(_state);
     _renderFn();
 
     // 等 DOM 更新后：先显示对话框（获取真实高度），再定位
     requestAnimationFrame(function () {
       requestAnimationFrame(function () {
+        // 渲染后若步骤已被切换（理论上不会，双保险），放弃本次显示
+        if (!_active || myGen !== _gen) { if (done) done(); return; }
         _showDialog(step);
         _positionSpotlight(step);
-        if (step.onEnter) {
-          _timer = setTimeout(function () { step.onEnter(); }, 500);
-        }
+        // 新发的手牌会从牌堆飞入（animateDraw，约 350ms+ 带错位），
+        // 飞行途中 getBoundingClientRect 取到的是牌堆附近的瞬时位置（右上角）。
+        // 待动画落定后再重定位一次，让弹窗对准卡牌的最终位置。
+        _scheduleSettle(step);
+        if (done) done();
       });
     });
+  }
+
+  // 点「下一步」：唯一的“讲解类步骤”推进入口。
+  // - _busy 防抖：从点击直到新对话框真正出现在屏幕上，全程上锁；
+  //   期间任何重复点击 / 重入（含 render 触发）都被忽略，避免一次推进多个对话框；
+  // - 清掉上一步遗留的自动播放/校正定时器，杜绝串台；
+  // - 若当前步骤声明了 onNext（对手自动行动），先播完再进入下一步。
+  var _busy = false;
+  function _goNext() {
+    if (!_active || _busy) return;
+    var step = _steps[_currentStep];
+    if (!step) { Tutorial.skip(); return; }
+
+    // 最后一步：按钮即“开始对战”
+    if (_currentStep >= _steps.length - 1) {
+      Tutorial.skip();
+      return;
+    }
+
+    _busy = true;
+    if (_timer) { clearTimeout(_timer); _timer = null; }
+    _clearSettle();
+    _gen++;                       // 进入新一轮推进，作废所有在途回调
+    var myGen = _gen;
+
+    function proceed() {
+      _hideDialog();
+      _currentStep++;
+      // 锁持续到新对话框真正显示之后再释放，覆盖 rAF 间隙，杜绝重入连跳。
+      _advance(function () { _busy = false; });
+    }
+
+    if (typeof step.onNext === 'function') {
+      // 播放期间禁用按钮并提示，给出“进行中”反馈
+      _nextBtn.disabled = true;
+      var _label = _nextBtn.textContent;
+      _nextBtn.textContent = '对手行动中…';
+      step.onNext(function () {
+        // onNext 播放完成回调：若期间已被 skip 或步骤被切换，则不推进。
+        if (!_active || myGen !== _gen) { _busy = false; return; }
+        _nextBtn.disabled = false;
+        _nextBtn.textContent = _label;
+        proceed();
+      });
+    } else {
+      proceed();
+    }
   }
 
   function _showDialog(step) {
     if (!_dialogText || !_dialog) return;
     _dialogText.innerHTML = step.text;
 
+    var isLast = (_currentStep >= _steps.length - 1);
+    _nextBtn.disabled = false;
+    _nextBtn.textContent = isLast ? '开始对战' : '下一步';
+
     if (step.expected === null) {
+      // 讲解类步骤：显示「下一步 / 开始对战」；最后一步隐藏「跳过」。
       _nextBtn.style.display = '';
-      _skipBtn.style.display = '';
+      _skipBtn.style.display = isLast ? 'none' : '';
     } else {
-      // 用户需要操作，隐藏下一步按钮
+      // 用户需要亲自操作：隐藏下一步按钮，保留跳过
       _nextBtn.style.display = 'none';
       _skipBtn.style.display = '';
     }
@@ -449,11 +569,7 @@
       _skipBtn = $('tutorial-skip');
 
       if (_nextBtn) {
-        _nextBtn.addEventListener('click', function () {
-          _hideDialog();
-          _currentStep++;
-          _advance();
-        });
+        _nextBtn.addEventListener('click', function () { _goNext(); });
       }
       if (_skipBtn) {
         _skipBtn.addEventListener('click', function () {
@@ -465,6 +581,8 @@
     start: function () {
       _currentStep = 0;
       _active = true;
+      _busy = false;
+      _gen++;
       _stepCtx = {};
       _overlay.classList.add('active');
       document.body.classList.add('tutorial-active');
@@ -482,17 +600,14 @@
       if (type !== step.expected) {
         return { allowed: false, msg: step.hint || '请按教程指引操作' };
       }
-      // 对于 playItem，检查是否是预期的道具
-      if (type === 'playItem' && step.id === 'use-filter') {
+      // 道具类动作：若步骤声明了 expectedItemId，则校验打出的正是那张道具。
+      // 用数据字段而非按 step.id 硬编码，新增道具教学步骤时无需改动这里。
+      if (step.expectedItemId &&
+          (type === 'playItem' || type === 'playAttackItem' || type === 'playCatalyst')) {
         var card = _findCardByUid(payload.uid);
-        if (!card || card.id !== 'filter') {
-          return { allowed: false, msg: '请使用「过滤」道具' };
-        }
-      }
-      if (type === 'playAttackItem' && step.id === 'play-volatilize') {
-        var c = _findCardByUid(payload.uid);
-        if (!c || c.id !== 'volatilize') {
-          return { allowed: false, msg: '请使用「挥发」道具' };
+        if (!card || card.id !== step.expectedItemId) {
+          var def = (window.CARD_CONFIG && CARD_CONFIG.ITEMS[step.expectedItemId]) || null;
+          return { allowed: false, msg: '请使用「' + (def ? def.name : step.expectedItemId) + '」道具' };
         }
       }
       return { allowed: true };
@@ -500,11 +615,18 @@
 
     // ui.js doAction 在校验通过并执行后调用
     onActionTaken: function () {
-      if (!_active) return;
+      if (!_active || _busy) return;
+      _busy = true;
       _hideDialog();
+      _clearSettle();
       _currentStep++;
+      _gen++;                                  // 作废在途回调
+      var myGen = _gen;
       if (_timer) clearTimeout(_timer);
-      _timer = setTimeout(function () { _advance(); }, 300);
+      _timer = setTimeout(function () {
+        if (!_active || myGen !== _gen) { _busy = false; return; }
+        _advance(function () { _busy = false; });
+      }, 300);
     },
 
     _onPostRender: function () {
@@ -515,7 +637,10 @@
 
     skip: function () {
       _active = false;
+      _busy = false;
+      _gen++;
       if (_timer) clearTimeout(_timer);
+      _clearSettle();
       if (_overlay) _overlay.classList.remove('active');
       document.body.classList.remove('tutorial-active');
       if (_dialog) _dialog.classList.remove('show');
@@ -524,8 +649,23 @@
       location.href = 'index.html';
     },
 
-    isActive: function () { return _active; }
+    isActive: function () { return _active; },
+
+    // 仅供测试 / 调试：暴露步骤定义与执行器，便于离线驱动整条教程流程。
+    _test: {
+      steps: _steps,
+      applyAuto: _applyAuto,
+      giveCard: _giveCard,
+      seedZone: _seedZone,
+      initCleanState: _initCleanState,
+      // 用脚手架 state 跑某一步的 setup（不依赖 DOM）
+      runSetup: function (state, i) {
+        _state = state;
+        if (_steps[i] && _steps[i].setup) _steps[i].setup(state);
+      }
+    }
   };
 
-  window.Tutorial = Tutorial;
+  if (typeof window !== 'undefined') window.Tutorial = Tutorial;
+  if (typeof module !== 'undefined' && module.exports) module.exports = Tutorial;
 })();

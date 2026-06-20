@@ -797,6 +797,26 @@ body.game {
   pointer-events: auto; /* 弹窗按钮可点击 */
 }
 
+/* 指向目标的小箭头 */
+.tutorial-dialog[data-arrow="up"]::before,
+.tutorial-dialog[data-arrow="down"]::before {
+  content: "";
+  position: absolute;
+  left: var(--arrow-x, 50%);
+  transform: translateX(-50%);
+  width: 0; height: 0;
+  border-left: 9px solid transparent;
+  border-right: 9px solid transparent;
+}
+.tutorial-dialog[data-arrow="up"]::before {
+  top: -9px;
+  border-bottom: 9px solid var(--accent);
+}
+.tutorial-dialog[data-arrow="down"]::before {
+  bottom: -9px;
+  border-top: 9px solid var(--accent);
+}
+
 .tutorial-dialog-text {
   font-size: 14px;
   line-height: 1.75;
@@ -842,3 +862,85 @@ body.tutorial-active .turn-notice.show {
   opacity: 0 !important;
   pointer-events: none !important;
 }
+
+/* ─────────────────── 卡牌百科 ─────────────────── */
+
+.enc-mask {
+  position: fixed; inset: 0; z-index: 500;
+  background: rgba(0,0,0,0.55);
+  display: none; align-items: center; justify-content: center;
+  padding: 20px;
+}
+.enc-mask.show { display: flex; }
+
+.enc-panel {
+  position: relative;
+  width: 100%; max-width: 560px; max-height: 86vh;
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: 16px;
+  display: flex; flex-direction: column;
+  box-shadow: 0 12px 48px rgba(0,0,0,0.6);
+  overflow: hidden;
+}
+.enc-head {
+  display: flex; align-items: center; justify-content: space-between;
+  padding: 16px 20px; border-bottom: 1px solid var(--line);
+  flex-shrink: 0;
+}
+.enc-title { font-size: 16px; font-weight: 800; color: var(--accent-2); }
+.enc-close {
+  background: transparent; border: none; color: var(--text-dim);
+  font-size: 18px; cursor: pointer; line-height: 1; padding: 4px 8px;
+  border-radius: 6px; transition: color .15s, background .15s;
+}
+.enc-close:hover { color: var(--text); background: var(--panel-2); }
+
+.enc-scroll { overflow-y: auto; padding: 16px 20px 24px; }
+.enc-group-title {
+  font-size: 12px; color: var(--accent); font-weight: 700;
+  letter-spacing: .5px; text-transform: uppercase;
+  margin: 16px 0 10px;
+}
+.enc-group-title:first-child { margin-top: 0; }
+.enc-grid {
+  display: grid; grid-template-columns: repeat(auto-fill, minmax(64px, 1fr));
+  gap: 10px;
+}
+.card.enc-tile { cursor: pointer; width: 100%; height: 84px; }
+.card.enc-tile:hover {
+  transform: translateY(-4px);
+  border-color: var(--accent);
+  box-shadow: 0 4px 12px rgba(212,124,46,.25);
+}
+
+/* 详情子页：覆盖在 panel 之上 */
+.enc-detail {
+  position: absolute; inset: 0;
+  background: var(--panel);
+  display: none; flex-direction: column;
+}
+.enc-detail.show { display: flex; }
+.enc-detail-head {
+  display: flex; align-items: center; justify-content: space-between;
+  padding: 16px 20px; border-bottom: 1px solid var(--line); flex-shrink: 0;
+}
+.enc-detail-title { font-size: 18px; font-weight: 800; color: var(--accent-2); }
+.enc-detail-back {
+  background: var(--panel-2); border: 1px solid var(--line);
+  color: var(--text); font-size: 13px; padding: 6px 14px;
+  border-radius: 7px; cursor: pointer; transition: border-color .15s;
+}
+.enc-detail-back:hover { border-color: var(--accent); }
+.enc-detail-body { padding: 20px; overflow-y: auto; }
+.enc-detail-body .enc-meta { font-size: 13px; color: var(--text-dim); margin: 0 0 4px; }
+.enc-detail-body .enc-section-title {
+  font-size: 12px; color: var(--accent); font-weight: 700;
+  letter-spacing: .5px; text-transform: uppercase; margin: 16px 0 8px;
+}
+.enc-detail-body .enc-desc { font-size: 14px; line-height: 1.7; color: var(--text); margin: 0; }
+.enc-detail-body .enc-rx { margin: 0; padding-left: 18px; }
+.enc-detail-body .enc-rx li { font-size: 13px; line-height: 1.9; color: var(--text); }
+.enc-detail-body .tag-defense { color: #7ec8a0; }
+.enc-detail-body .tag-attack  { color: var(--danger); }
+.enc-detail-body .tag-neutral { color: var(--text-dim); }

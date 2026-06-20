@@ -61,6 +61,11 @@
     go({ mode: 'tutorial' });
   });
 
+  // ---- 卡牌百科：纯前端弹层 ----
+  $('btn-encyclopedia').addEventListener('click', function () {
+    if (window.Encyclopedia) Encyclopedia.open();
+  });
+
   // 房间码输入框自动大写
   $('room-code').addEventListener('input', (e) => {
     e.target.value = e.target.value.toUpperCase();
